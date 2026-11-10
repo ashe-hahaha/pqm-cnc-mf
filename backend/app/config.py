@@ -47,3 +47,9 @@ class Settings(BaseSettings):
     microscope_kafka_max_message_bytes: int = Field(default=50000000, ge=1024)
     microscope_max_image_bytes: int = Field(default=50000000, ge=1)
     microscope_image_dir: str = "./data/microscope"
+    tool_wear_demo_enabled: bool = False
+    tool_wear_alert_kafka_enabled: bool = False
+    tool_wear_alert_kafka_topic: str = "makino_tool_wear_alert"
+    tool_wear_alert_temi_enabled: bool = False
+    tool_wear_alert_temi_url: str = ""
+    tool_wear_alert_temi_token: SecretStr = SecretStr("")

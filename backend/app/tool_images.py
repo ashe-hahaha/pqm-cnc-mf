@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import Settings
 from app.signals import json_safe
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 class InvalidCapture(ValueError):
@@ -175,7 +175,8 @@ class ToolImageService:
         else:
             if metadata is not None:
                 self.publish("image", metadata)
-                logger.info("Microscope image received capture=%s tool=%s", metadata["captureId"], metadata["toolNo"])
+                logger.info("Microscope image received from Kafka capture=%s tool=%s topic=%s partition=%s offset=%s",
+                            metadata["captureId"], metadata["toolNo"], record.topic, record.partition, record.offset)
         # Persisted images/rejections survive restarts before the offset is advanced.
         await consumer.commit({TopicPartition(record.topic, record.partition): record.offset + 1})
 

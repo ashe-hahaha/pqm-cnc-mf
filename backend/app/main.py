@@ -16,6 +16,7 @@ from app.sources import SourceError, build_source
 from app.tool_wear import ToolWearStore
 from app.tool_images import ToolImageService
 from app.wear_history import WearHistoryService
+from app.wear_alerts import WearAlerts, router as wear_alert_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -37,17 +38,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.tool_wear_lock = Lock()
             app.state.wear_history = WearHistoryService(settings)
             app.state.tool_images = ToolImageService(settings)
+            app.state.wear_alerts = WearAlerts(settings)
             app.state.tool_images.start()
+            app.state.wear_alerts.start()
             try:
                 yield
             finally:
+                await app.state.wear_alerts.close()
                 await app.state.wear_history.close()
                 await app.state.tool_images.close()
                 await app.state.signals.close()
                 app.state.tool_wear.close()
 
     app = FastAPI(title="PQM CNC Data API", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET"], allow_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "PUT", "POST"], allow_headers=["*"])
+    app.include_router(wear_alert_router)
 
     @app.exception_handler(SourceError)
     async def source_error_handler(request: Request, exc: SourceError):
