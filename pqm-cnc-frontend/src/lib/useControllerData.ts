@@ -1,0 +1,35 @@
+"use client";
+import { useEffect, useState } from "react";
+
+export type ControllerRow = {
+  timestamp: string; tool_no?: number | null;
+  feed_rate?: number | null; spindle_speed?: number | null;
+  AP?: number | null; AE?: number | null;
+  xWearMm?: number | null; zWearMm?: number | null;
+  xGeometryMm?: number | null; zGeometryMm?: number | null;
+  tool_wear_x_mm?: number | null; tool_wear_z_mm?: number | null;
+};
+export function controllerOffset(row: ControllerRow | undefined, axis: "x" | "z") {
+  const wear = row?.[axis === "x" ? "xWearMm" : "zWearMm"] ?? row?.[axis === "x" ? "tool_wear_x_mm" : "tool_wear_z_mm"];
+  const geometry = row?.[axis === "x" ? "xGeometryMm" : "zGeometryMm"];
+  const valid = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+  return { wear: valid(wear) ? wear : null, geometry: valid(geometry) ? geometry : null,
+    offset: valid(wear) && valid(geometry) ? wear + geometry : null };
+}
+export function useControllerData() {
+  const [rows, setRows] = useState<ControllerRow[]>([]);
+  const [status, setStatus] = useState("connecting");
+  useEffect(() => {
+    const base = process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000";
+    const machine = process.env.NEXT_PUBLIC_SIGNALS_MACHINE_ID;
+    const source = new EventSource(`${base.replace(/\/$/, "")}/api/signals/stream${machine ? `?machine_id=${encodeURIComponent(machine)}` : ""}`);
+    source.addEventListener("signals", event => {
+      const batch = JSON.parse((event as MessageEvent).data);
+      setRows((batch.process ?? []).slice().sort((a: ControllerRow, b: ControllerRow) => Date.parse(a.timestamp) - Date.parse(b.timestamp)));
+    });
+    source.addEventListener("status", event => setStatus(JSON.parse((event as MessageEvent).data).state));
+    source.onerror = () => setStatus("unavailable");
+    return () => source.close();
+  }, []);
+  return { rows, status };
+}

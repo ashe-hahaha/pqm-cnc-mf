@@ -1,0 +1,38 @@
+services:
+  frontend:
+    image: ${DOCKERHUB_USERNAME:?Set DOCKERHUB_USERNAME}/pqm-cnc-frontend:${IMAGE_TAG:?Set IMAGE_TAG}
+    ports:
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-3001}:3001"
+    environment:
+      - LLM_BASE_URL
+      - STT_URL
+    volumes:
+      - machining-data:/app/pqm-cnc-frontend/data/MachiningData
+      - balloon-layouts:/app/pqm-cnc-frontend/data/pqm
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend:
+    image: ${DOCKERHUB_USERNAME:?Set DOCKERHUB_USERNAME}/pqm-cnc-backend:${IMAGE_TAG:?Set IMAGE_TAG}
+    env_file:
+      - path: ./backend.env
+        required: false
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+      MICROSCOPE_IMAGE_DIR: /app/data/microscope
+    volumes:
+      - microscope:/app/data/microscope
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  machining-data:
+  balloon-layouts:
+  microscope:

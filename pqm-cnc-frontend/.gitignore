@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.*
+
+# Next.js and build output
+.next/
+.next-backup-*/
+out/
+build/
+dist/
+next-env.d.ts
+*.tsbuildinfo
+
+# Tests and tool caches
+coverage/
+.cache/
+.turbo/
+.eslintcache
+.vite/
+
+# Local configuration and credentials
+.env*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.pfx
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime uploads
+/data/MachiningData/_uploads/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local deployment and OS files
+.vercel/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo

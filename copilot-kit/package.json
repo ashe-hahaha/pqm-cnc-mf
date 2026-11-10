@@ -1,0 +1,28 @@
+{
+  "name": "copilot-kit",
+  "version": "0.1.0",
+  "description": "Shared local-LLM copilot agent loop, streaming protocol and voice (STT/TTS) for the PdM / OEE / PQM apps",
+  "private": true,
+  "type": "module",
+  "files": ["dist", "stt-service"],
+  "exports": {
+    "./server": { "types": "./dist/server/index.d.ts", "default": "./dist/server/index.js" },
+    "./client": { "types": "./dist/client/index.d.ts", "default": "./dist/client/index.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepare": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "react": "19.2.4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,6 +1,4 @@
-.venv/
-__pycache__/
-.pytest_cache/
-.env
-*.egg-info/
-data/microscope/
+/.env
+/backend.env
+/backend/data/
+/pqm-cnc-frontend/data/

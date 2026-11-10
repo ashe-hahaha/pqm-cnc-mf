@@ -1,0 +1,37 @@
+{
+  "name": "pqm-cnc",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack --port 3001",
+    "build": "next build",
+    "start": "next start --port 3001",
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start:https": "next start --port 3101 --hostname 127.0.0.1 & APP_PORT=3101 HTTPS_PORT=${HTTPS_PORT:-3001} node scripts/https-proxy.mjs; kill %1",
+    "voice:stt": "node_modules/copilot-kit/stt-service/run_stt.sh",
+    "kit:update": "npm --prefix ../copilot-kit run build && npm install --install-links ../copilot-kit"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "copilot-kit": "file:../copilot-kit",
+    "next": "16.2.12",
+    "pdfjs-dist": "^6.2.108",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.5",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.12",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}
