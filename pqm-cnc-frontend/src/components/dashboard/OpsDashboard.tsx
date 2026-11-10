@@ -356,8 +356,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <p className="text-[10px] uppercase tracking-[0.12em] text-[#70889c]">{monitor === 'quality' ? 'Feature-level quality monitoring' : 'Tool-level condition monitoring'}</p>
           </div>
           <div id="monitor-tool-wear" role="tabpanel" aria-labelledby="tab-tool-wear" hidden={monitor !== 'tool-wear'}>
-            <div className="mb-3"><WearAlertForm snapshot={wearDemo} settings /></div>
-            <ToolWearDashboard currentTool={data.job.currentTool} locked={dashLayout.locked} />
+            <ToolWearDashboard currentTool={data.job.currentTool} locked={dashLayout.locked} wearDemo={wearDemo} />
           </div>
           <div id="monitor-quality" role="tabpanel" aria-labelledby="tab-quality" hidden={monitor !== 'quality'}>
           <div className="mb-3"><WearAlertForm snapshot={wearDemo} /></div>

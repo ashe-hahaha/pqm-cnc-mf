@@ -9,6 +9,7 @@ import { ColResizeHandle } from "./ResizableBox";
 import { useWearHistory } from "@/lib/useWearHistory";
 import { WearHistoryChart } from "./WearHistoryChart";
 import { toolLabel } from "@/lib/toolNumber";
+import { WearAlertForm, type WearAlertSnapshot } from "./WearAlertDemo";
 
 const METRICS = [
   { key: "diameter", axis: "x", label: "Diameter wear", color: "#38bdf8" },
@@ -16,7 +17,12 @@ const METRICS = [
 ] as const;
 
 /** Controller readouts and wear history for the selected tool. */
-export function ToolWearDashboard({ locked = false }: { currentTool: string; locked?: boolean }) {
+export function ToolWearDashboard({ locked = false, wearDemo = null }: {
+  currentTool: string;
+  locked?: boolean;
+  wearDemo?: WearAlertSnapshot | null;
+}) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const { latestByTool, status: controllerStatus } = useControllerData(true);
   const [selectedTool, setSelectedTool] = useState("30");
   const [minutes, setMinutes] = useState(60);
@@ -52,7 +58,19 @@ export function ToolWearDashboard({ locked = false }: { currentTool: string; loc
 
       <div className="grid grid-cols-1 items-start gap-y-2 lg:grid-cols-[var(--tools-width)_8px_minmax(0,1fr)]" style={{ "--tools-width": `${columns.tools}px` } as CSSProperties}>
         <ResizableToolBlock id="tools" width={240} height={500} locked={locked} fillWidth>
-        <Panel title="Tool">
+        <Panel title="Tool" titleRight={
+          <button type="button" aria-label="Prediction alert thresholds" title="Prediction alert thresholds"
+            aria-expanded={settingsOpen} aria-controls="tool-wear-thresholds"
+            onClick={() => setSettingsOpen(open => !open)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-sm leading-none text-[#8296a8] hover:bg-[#192a39] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-[#8296a8]">
+            <span aria-hidden="true">⚙</span>
+          </button>
+        }>
+          <div id="tool-wear-thresholds" hidden={!settingsOpen}>
+            {settingsOpen && <div className="mb-3 border-b border-[#243141] pb-2">
+              <WearAlertForm snapshot={wearDemo} settings />
+            </div>}
+          </div>
           <label className="block text-xs text-[#8296a8]">Selected tool
             <select aria-label="Selected tool" value={selectedTool} onChange={event => setSelectedTool(event.target.value)}
               className="mt-2 w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]">

@@ -12,7 +12,7 @@ type WearAlert = {
   prediction: Prediction;
   thresholds: Values;
 };
-type Snapshot = {
+export type WearAlertSnapshot = {
   enabled: boolean;
   thresholds: Values;
   prediction: Prediction | null;
@@ -26,12 +26,12 @@ const fieldStyle = "w-full rounded border border-[#314254] bg-[#0c1722] p-2 text
 const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5d8fa] disabled:opacity-50";
 
 export function useWearAlertDemo() {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<WearAlertSnapshot | null>(null);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
       const response = await fetch(endpoint, { cache: "no-store", signal });
       if (response.ok) {
-        const data: Snapshot = await response.json();
+        const data: WearAlertSnapshot = await response.json();
         if (!signal?.aborted) setSnapshot(data);
       }
     } catch {
@@ -61,8 +61,7 @@ export function useWearAlertDemo() {
   return snapshot;
 }
 
-export function WearAlertForm({ snapshot, settings = false }: { snapshot: Snapshot | null; settings?: boolean }) {
-  const [open, setOpen] = useState(false);
+export function WearAlertForm({ snapshot, settings = false }: { snapshot: WearAlertSnapshot | null; settings?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const prediction = snapshot?.prediction;
@@ -90,36 +89,31 @@ export function WearAlertForm({ snapshot, settings = false }: { snapshot: Snapsh
     }
   }
 
-  return (
-    <Panel title={settings ? "Prediction alert settings" : "Mock tool wear prediction"}>
-      {settings ? (
-        <button className={buttonStyle} type="button" aria-expanded={open} onClick={() => setOpen(value => !value)}>
-          {open ? "Close settings" : "Set alert thresholds"}
-        </button>
-      ) : (
+  const content = (
+    <>
+      {!settings && (
         <p className="text-xs text-[#a5bdd0]">
           {prediction
             ? `${prediction.machineId} · Tool ${prediction.toolNo} · Diameter ${prediction.diameter} mm · Length ${prediction.length} mm · ${new Date(prediction.timestampUtc).toLocaleString()}`
             : "No mock prediction yet."}
         </p>
       )}
-      {(!settings || open) && (
-        <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={submit}>
-          {!settings && <label>Tool number<input className={fieldStyle} name="toolNo" defaultValue="167" required maxLength={64} /></label>}
-          {fields.map(field => (
-            <label key={`${field}:${settings ? snapshot?.thresholds[field] : "mock"}`}>
-              {field === "diameter" ? "Diameter" : "Length"} {settings ? "threshold" : "prediction"} (mm)
-              <input className={fieldStyle} name={field} type="number" min="0" step="any" required
-                defaultValue={settings ? snapshot?.thresholds[field] ?? 999 : 0} />
-            </label>
-          ))}
-          <button className={buttonStyle} disabled={busy || !snapshot?.enabled}>
-            {settings ? "Save thresholds" : "Submit mock prediction"}
-          </button>
-        </form>
-      )}
+      <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={submit}>
+        {!settings && <label>Tool number<input className={fieldStyle} name="toolNo" defaultValue="167" required maxLength={64} /></label>}
+        {fields.map(field => (
+          <label key={`${field}:${settings ? snapshot?.thresholds[field] : "mock"}`}>
+            {field === "diameter" ? "Diameter" : "Length"} {settings ? "threshold" : "prediction"} (mm)
+            <input className={fieldStyle} name={field} type="number" min="0" step="any" required
+              defaultValue={settings ? snapshot?.thresholds[field] ?? 999 : 0} />
+          </label>
+        ))}
+        <button className={buttonStyle} disabled={busy || !snapshot?.enabled}>
+          {settings ? "Save thresholds" : "Submit mock prediction"}
+        </button>
+      </form>
       {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>
-    </Panel>
+    </>
   );
+  return settings ? content : <Panel title="Mock tool wear prediction">{content}</Panel>;
 }
