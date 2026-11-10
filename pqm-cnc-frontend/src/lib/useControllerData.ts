@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
+import { toolKey } from "./toolNumber";
 
 export type ControllerRow = {
-  timestamp: string; tool_no?: number | null;
+  timestamp: string; tool_no?: number | string | null;
   feed_rate?: number | null; spindle_speed?: number | null;
   AP?: number | null; AE?: number | null;
   xWearMm?: number | null; zWearMm?: number | null;
@@ -16,8 +17,9 @@ export function controllerOffset(row: ControllerRow | undefined, axis: "x" | "z"
   return { wear: valid(wear) ? wear : null, geometry: valid(geometry) ? geometry : null,
     offset: valid(wear) && valid(geometry) ? wear + geometry : null };
 }
-export function useControllerData() {
+export function useControllerData(keepToolSnapshots = false) {
   const [rows, setRows] = useState<ControllerRow[]>([]);
+  const [latestByTool, setLatestByTool] = useState<Record<string, ControllerRow>>({});
   const [status, setStatus] = useState("connecting");
   useEffect(() => {
     const base = process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000";
@@ -25,11 +27,22 @@ export function useControllerData() {
     const source = new EventSource(`${base.replace(/\/$/, "")}/api/signals/stream${machine ? `?machine_id=${encodeURIComponent(machine)}` : ""}`);
     source.addEventListener("signals", event => {
       const batch = JSON.parse((event as MessageEvent).data);
-      setRows((batch.process ?? []).slice().sort((a: ControllerRow, b: ControllerRow) => Date.parse(a.timestamp) - Date.parse(b.timestamp)));
+      const records: ControllerRow[] = (batch.process ?? []).slice().sort((a: ControllerRow, b: ControllerRow) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+      setRows(records);
+      if (keepToolSnapshots && records.length) setLatestByTool(previous => {
+        const next = { ...previous };
+        for (const record of records) {
+          const key = toolKey(record.tool_no);
+          if (!next[key] || Date.parse(record.timestamp) >= Date.parse(next[key].timestamp)) {
+            next[key] = record;
+          }
+        }
+        return next;
+      });
     });
     source.addEventListener("status", event => setStatus(JSON.parse((event as MessageEvent).data).state));
     source.onerror = () => setStatus("unavailable");
     return () => source.close();
-  }, []);
-  return { rows, status };
+  }, [keepToolSnapshots]);
+  return { rows, status, latestByTool };
 }

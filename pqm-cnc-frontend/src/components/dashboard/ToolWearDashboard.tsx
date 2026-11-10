@@ -8,24 +8,25 @@ import { ResizableToolBlock } from "./ResizableToolBlock";
 import { ColResizeHandle } from "./ResizableBox";
 import { useWearHistory } from "@/lib/useWearHistory";
 import { WearHistoryChart } from "./WearHistoryChart";
+import { toolLabel } from "@/lib/toolNumber";
 
 const METRICS = [
   { key: "diameter", axis: "x", label: "Diameter wear", color: "#38bdf8" },
   { key: "length", axis: "z", label: "Tool length wear", color: "#c4a0ff" },
 ] as const;
 
-/** Single-tool controller readouts and real hot-store history; null tool numbers are retained. */
+/** Controller readouts and wear history for the selected tool. */
 export function ToolWearDashboard({ locked = false }: { currentTool: string; locked?: boolean }) {
-  const { rows, status: controllerStatus } = useControllerData();
+  const { latestByTool, status: controllerStatus } = useControllerData(true);
+  const [selectedTool, setSelectedTool] = useState("30");
   const [minutes, setMinutes] = useState(60);
   const [bounds, setBounds] = useState<{ start: string; end: string } | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  const history = useWearHistory(minutes, bounds?.start, bounds?.end);
+  const history = useWearHistory(minutes, bounds?.start, bounds?.end, selectedTool);
   const [columns, setColumns] = useState({ tools: 240, diameter: 50 });
   const gridRef = useRef<HTMLDivElement>(null);
-  const controller = rows.at(-1);
-  const toolNo = controller?.tool_no ?? history.data?.data.at(-1)?.toolNo;
-  const toolLabel = toolNo != null ? `Tool ${toolNo}` : "Tool · number unavailable";
+  const controller = latestByTool[selectedTool];
+  const tools = [...new Set(["30", "6", ...Object.keys(latestByTool), ...history.discoveredTools])];
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
@@ -51,9 +52,14 @@ export function ToolWearDashboard({ locked = false }: { currentTool: string; loc
 
       <div className="grid grid-cols-1 items-start gap-y-2 lg:grid-cols-[var(--tools-width)_8px_minmax(0,1fr)]" style={{ "--tools-width": `${columns.tools}px` } as CSSProperties}>
         <ResizableToolBlock id="tools" width={240} height={500} locked={locked} fillWidth>
-        <Panel title="Tool" titleRight={<span className="text-[10px] text-[#8296a8]">Single tool</span>}>
-          <p className="text-base font-semibold">{toolLabel}</p>
-          <p className="mt-2 text-[11px] text-[#8296a8]">Records with an unknown tool number are included.</p>
+        <Panel title="Tool">
+          <label className="block text-xs text-[#8296a8]">Selected tool
+            <select aria-label="Selected tool" value={selectedTool} onChange={event => setSelectedTool(event.target.value)}
+              className="mt-2 w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]">
+              {tools.map(tool => <option key={tool} value={tool}>{toolLabel(tool)}</option>)}
+            </select>
+          </label>
+          {controller && <p className="mt-2 text-[11px] text-[#8296a8]">Last controller sample · {new Date(controller.timestamp).toLocaleString()}</p>}
           <label className="mt-5 block text-xs text-[#8296a8]">History range
             <select aria-label="Wear history range" value={bounds ? "custom" : String(minutes)} onChange={event => {
               if (event.target.value !== "custom") { setMinutes(Number(event.target.value)); setBounds(null); setRangeError(null); }
@@ -95,7 +101,7 @@ export function ToolWearDashboard({ locked = false }: { currentTool: string; loc
             </section></ResizableToolBlock>{metric.key === 'diameter' && <div className="flex self-stretch"><ColResizeHandle locked={locked} onDrag={(dx) => resizeColumns("diameter", dx)} /></div>}</div>;
           })}
           {METRICS.map((metric) => <div key={metric.key} className="contents"><ResizableToolBlock id={`${metric.key}-trend`} width={520} height={330} locked={locked} fillWidth>
-            <Panel title={`${metric.label} history`} bodyClassName="flex flex-col">
+            <Panel title={`${metric.label} history · ${toolLabel(selectedTool)}`} bodyClassName="flex flex-col">
               {history.loading ? <p className="p-4 text-xs text-[#8296a8]">Loading wear history…</p> : null}
               {history.error && <p role="alert" className="mb-2 text-xs text-amber-400">{history.error}{history.data ? " · Showing last successful data" : ""}</p>}
               {history.data && <><div className="relative min-h-[100px] flex-1"><WearHistoryChart history={history.data} axis={metric.axis} label={metric.label} color={metric.color} /></div>

@@ -192,8 +192,7 @@ GET /api/tool-wear/history?window_minutes=60&limit=2000
 GET /api/tool-wear/history?machine_id=Makino_01&start=2026-11-04T00:00:00Z&end=2026-11-04T01:00:00Z&limit=2000
 ```
 
-- 不传 start/end：backend 短暂读取上游 `/api/events?environment=real` 的首个 ready 事件，取该机床 **process_values** 的 t_max 作为窗口终点（+1 ms 包含最后样本）。不使用 sensor_values 或本机当前时间。读取首事件后关闭 SSE，不依赖后续 Kafka data_event。
-- 上游未配置事件 Kafka 而 `/api/events` 返回 503 时，自动窗口无法确定，接口返回错误；指定 start/end 的查询仍可独立运行。没有 process_values 范围则返回空历史，不回退到 sensor 时间。
+- 不传 start/end 时，以服务端当前 UTC 时间为终点，向前查询 window_minutes 分钟（默认 60）。直接查询历史 API。
 - 显式时间使用带时区的 ISO 时间；范围 `[start,end)`。保留空 wear 值为 null（图表断线），保留负数和零。空刀具号不会丢掉或补成 T06。若 API 显式带 tool_no，只过滤其他非空刀具号，空号仍包含。
 - frontend 两张图共享一个请求，默认最近 1 小时，可选 15 分钟/8 小时或自定义本地时间范围。每轮完成 5 秒后刷新，隐藏页面暂停，重新显示即刷新；不重叠请求。异常保留最后成功结果并提示，切换范围后不沿用旧图。
 - backend 4 秒短缓存与并发查询锁减少重复请求；历史时间跨度仍受 TOOL_WEAR_MAX_RANGE_HOURS 限制。

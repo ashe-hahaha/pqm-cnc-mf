@@ -10,7 +10,7 @@ vi.mock("@/lib/useToolImage", () => ({ useToolImage: () => ({ status: "connected
 } }) }));
 
 vi.mock("@/lib/useControllerData", () => ({
-  useControllerData: () => ({ status: "live", rows: [{ timestamp: "2026-10-29T00:00:00Z", tool_no: null, xWearMm: 0.34, zWearMm: 0.19, xGeometryMm: 2, zGeometryMm: 10 }] }),
+  useControllerData: () => ({ status: "live", latestByTool: { "30": { timestamp: "2026-10-29T00:00:00Z", tool_no: 30, xWearMm: 0.34, zWearMm: 0.19, xGeometryMm: 2, zGeometryMm: 10 } } }),
   controllerOffset: (row: { xWearMm: number; zWearMm: number; xGeometryMm: number; zGeometryMm: number } | undefined, axis: "x" | "z") => {
     const wear = row?.[axis === "x" ? "xWearMm" : "zWearMm"] ?? null;
     const geometry = row?.[axis === "x" ? "xGeometryMm" : "zGeometryMm"] ?? null;
@@ -23,7 +23,7 @@ const historyState = vi.hoisted(() => ({ data: {
     { timestamp: "2026-11-04T00:10:00Z", timestampEpoch: 1793751000000, toolNo: null, xWearMm: -0.1, zWearMm: 0.2, xSegment: 0, zSegment: 0 },
     { timestamp: "2026-11-04T00:20:00Z", timestampEpoch: 1793751600000, toolNo: null, xWearMm: 0, zWearMm: 0.3, xSegment: 0, zSegment: 0 },
   ],
-}, error: null as string | null, loading: false }));
+}, error: null as string | null, loading: false, discoveredTools: ["167", "unknown"] }));
 vi.mock("@/lib/useWearHistory", () => ({ useWearHistory: () => historyState }));
 let host: HTMLDivElement;
 let root: Root;
@@ -44,7 +44,9 @@ it("shows both health outputs and separate trend charts without offset or feedba
   expect(host.querySelector('svg[aria-label="Diameter wear history"]')).not.toBeNull();
   expect(host.querySelector('svg[aria-label="Tool length wear history"]')).not.toBeNull();
   expect(host.querySelectorAll('svg[aria-label$="wear history"] circle')).toHaveLength(4);
-  expect(host.textContent).toContain("Single tool");
+  const picker = host.querySelector<HTMLSelectElement>('select[aria-label="Selected tool"]')!;
+  expect([...picker.options].map(option => option.text)).toEqual(["T30", "T06", "T167", "Unknown tool"]);
+  expect(picker.value).toBe("30");
   expect(host.textContent).not.toContain("mock");
   expect(host.querySelectorAll("[data-tool-block]")).toHaveLength(6);
   expect(host.textContent).not.toContain("Apply offset");
@@ -60,4 +62,14 @@ it("shows history errors while retaining the last successful charts", async () =
   expect(host.textContent).toContain("Showing last successful data");
   expect(host.querySelector('svg[aria-label="Diameter wear history"]')).not.toBeNull();
   historyState.error = null;
+});
+
+it("switches to another tool without showing the previous controller reading", async () => {
+  const picker = host.querySelector<HTMLSelectElement>('select[aria-label="Selected tool"]')!;
+  await act(async () => {
+    picker.value = "6";
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(host.textContent).toContain("Diameter wear history · T06");
+  expect(host.querySelector('[aria-label="Diameter wear health"]')?.textContent).not.toContain("0.340");
 });

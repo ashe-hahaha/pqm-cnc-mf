@@ -6,15 +6,14 @@
 
 在 Docker Hub 创建 `pqm-cnc-frontend` 和 `pqm-cnc-backend` 两个仓库，并创建有推送权限的访问令牌。在集成仓库的 Settings → Secrets and variables → Actions 添加 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`。Docker Hub 命名空间使用该用户名。
 
-推送到 GitHub 默认分支后，Actions 在 Linux amd64 上构建两个镜像，用 Compose 检查首页和经前端转发的层级 API，再推送带同一个完整 commit SHA 的两个镜像。等发布步骤成功后再部署该 SHA。
+推送到 GitHub 默认分支后，Actions 在 Linux amd64 上构建两个镜像，用 Compose 检查首页和经前端转发的层级 API，再将两个镜像发布为 `latest`。等两个镜像都推送成功后再部署。
 
 ## 服务器
 
-安装 Docker 和支持可选 `env_file` 的 Compose（2.24.0 或更新）。复制 `compose.yaml`，同目录新建 `.env`，填入 Docker Hub 用户名和发布成功的完整 SHA。
+安装 Docker 和支持可选 `env_file` 的 Compose（2.24.0 或更新）。复制 `compose.yaml`，同目录新建 `.env`，填入 Docker Hub 用户名。
 
 ```dotenv
 DOCKERHUB_USERNAME=your-dockerhub-user
-IMAGE_TAG=your-full-commit-sha
 # WEB_PORT=3001
 # WEB_BIND=127.0.0.1
 # LLM_BASE_URL=http://ollama-host:11434
@@ -31,7 +30,7 @@ docker compose up -d --wait
 curl -fsS http://127.0.0.1:3001/backend/api/hierarchy
 ```
 
-部署更新或回滚时修改 `IMAGE_TAG`，重新执行以上命令。Compose 的命名卷保留图纸和上传、标注布局以及显微镜图片。首次上线若要导入已有现场文件，可在启动后执行以下命令，并将源路径替换为服务器上的实际目录。
+每次发布完成后重新执行以上命令，拉取并启动最新镜像。已有部署切换到 `latest` 时，先上传新版 `compose.yaml`，再删除旧 `.env` 里的 `IMAGE_TAG`。Compose 的命名卷保留图纸和上传、标注布局以及显微镜图片。首次上线若要导入已有现场文件，可在启动后执行以下命令，并将源路径替换为服务器上的实际目录。
 
 ```sh
 docker compose cp ./MachiningData/. frontend:/app/pqm-cnc-frontend/data/MachiningData/

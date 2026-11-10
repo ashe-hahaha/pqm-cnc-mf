@@ -1,5 +1,4 @@
 import asyncio
-import json
 from datetime import datetime, timezone
 
 import httpx
@@ -17,23 +16,20 @@ def row(stamp, x, z, tool=None):
             "process_values.tool_wear_x_mm": x, "process_values.tool_wear_z_mm": z}
 
 
-def test_latest_bounds_use_process_table_and_null_tool_is_retained():
+def test_default_bounds_use_current_time_and_null_tool_is_retained():
     async def run():
         calls = []
         def handler(request):
             calls.append(request)
             assert request.url.params["environment"] == "test"
-            if request.url.path == "/api/events":
-                data = {"ranges": [{"machine_id": "M1", "tables": [
-                    {"table": "sensor_values", "t_max_epoch": 99000000},
-                    {"table": "process_values", "t_max_epoch": 7200000}]}]}
-                return httpx.Response(200, text=f"event: ready\ndata: {json.dumps(data)}\n\n")
             assert request.url.path == "/api/history/fanuc_tool_wear"
             assert request.url.params["format"] == "json_record"
             assert "tool_no" not in request.url.params
-            assert int(request.url.params["end_time_epoch"]) == 7200001
-            assert int(request.url.params["start_time_epoch"]) == 3600001
-            return httpx.Response(200, json={"machine_id": "M1", "data": [row(7200000, -0.2, 0, None), row(7000000, None, 0.3, 6)]})
+            end = int(request.url.params["end_time_epoch"])
+            start = int(request.url.params["start_time_epoch"])
+            assert abs(end - datetime.now(timezone.utc).timestamp() * 1000) < 5000
+            assert abs(end - start - 3600000) <= 1
+            return httpx.Response(200, json={"machine_id": "M1", "data": [row(end - 2, -0.2, 0, None), row(end - 1000, None, 0.3, "T06")]})
         client = httpx.AsyncClient(base_url="http://test/", transport=httpx.MockTransport(handler))
         service = WearHistoryService(Settings(_env_file=None, history_environment="test"), client)
         result = await service.query("M1", None, None, None, 60, 1000)
@@ -42,7 +38,12 @@ def test_latest_bounds_use_process_table_and_null_tool_is_retained():
         assert result["data"][-1]["xWearMm"] == -0.2
         assert result["data"][-1]["zWearMm"] == 0
         assert await service.query("M1", None, None, None, 60, 1000) == result
-        assert len(calls) == 2
+        known = await service.query("M1", "06", None, None, 60, 1000)
+        unknown = await service.query("M1", "unknown", None, None, 60, 1000)
+        assert [point["toolNo"] for point in known["data"]] == ["6"]
+        assert [point["toolNo"] for point in unknown["data"]] == [None]
+        assert known["availableToolNos"] == ["6", None]
+        assert len(calls) == 1
         await service.close()
     asyncio.run(run())
 
@@ -53,7 +54,7 @@ def test_normalization_keeps_unknown_tool_and_segments_gaps():
     assert points[1]["xWearMm"] is None
     assert points[0]["xSegment"] != points[2]["xSegment"]
     assert points[2]["zSegment"] != points[3]["zSegment"]
-    assert len(normalize([row(1000, 1, 2), row(2000, 1, 2, 9)], "6")) == 1
+    assert len(normalize([row(1000, 1, 2), row(2000, 1, 2, 9)], "6")) == 0
 
 
 def test_reduction_covers_full_window_and_extrema():
@@ -78,11 +79,11 @@ def test_http_api_custom_window_and_missing_tool(tmp_path):
         assert client.get("/api/tool-wear/history", params={"start": "1970-01-01T00:00:01Z"}).status_code == 400
 
 
-def test_no_process_rows_returns_empty_without_querying_sensor_history():
+def test_empty_history_returns_no_points():
     async def run():
         def handler(request):
-            assert request.url.path == "/api/events"
-            return httpx.Response(200, text='event: ready\ndata: {"ranges":[]}\n\n')
+            assert request.url.path == "/api/history/fanuc_tool_wear"
+            return httpx.Response(200, json={"machine_id": "M1", "data": []})
         service = WearHistoryService(Settings(_env_file=None), httpx.AsyncClient(base_url="http://test/", transport=httpx.MockTransport(handler)))
         assert (await service.query("M1", None, None, None, 60, 1000))["data"] == []
         await service.close()
