@@ -36,7 +36,7 @@ import { OpsAlerts } from "./OpsAlerts";
 import { OpsRecommendations } from "./OpsRecommendations";
 import { OpsSidebar } from "./OpsSidebar";
 import { ToolWearDashboard } from "./ToolWearDashboard";
-import { useWearAlertDemo, WearAlertForm } from "./WearAlertDemo";
+import { useWearAlertDemo, WearAlertPopover } from "./WearAlertDemo";
 import type { WearEvent } from "./WearEventLog";
 import { ToolWearTrend } from "./ToolWearTrend";
 import { ProcessContextPanel } from "./ProcessContextPanel";
@@ -355,6 +355,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           onLayoutLockedChange={setLayoutLocked}
           canLoadNext={status.canLoadNext}
           onLoadNextPiece={loadNextPiece}
+          actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} /> : undefined}
         />
 
         <div className="flex-1 overflow-auto p-3">
@@ -370,7 +371,6 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <ToolWearDashboard currentTool={data.job.currentTool} locked={dashLayout.locked} wearDemo={wearDemo} events={wearEvents} onEvents={appendWearEvents} />
           </div>
           <div id="monitor-quality" role="tabpanel" aria-labelledby="tab-quality" hidden={monitor !== 'quality'}>
-          <div className="mb-3"><WearAlertForm snapshot={wearDemo} /></div>
           <div className="flex min-w-0 flex-col items-stretch gap-3 xl:flex-row xl:gap-0">
             <div
               className="flex w-full flex-col gap-3 xl:shrink-0"

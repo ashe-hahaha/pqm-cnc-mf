@@ -30,6 +30,56 @@
   --font-display: var(--font-display);
 }
 
+/* Slim dark scrollbars matching the panel theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2f4357 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2f4357;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #496177;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Date inputs: dark native picker (popup calendar + icon) to match the theme */
+input[type="date"] {
+  color-scheme: dark;
+  accent-color: var(--steel);
+  font-variant-numeric: tabular-nums;
+}
+input[type="date"]:hover {
+  border-color: #496177;
+}
+input[type="date"]:focus-visible {
+  outline: 1px solid #38bdf8;
+  outline-offset: 1px;
+  border-color: #38bdf8;
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.7;
+  border-radius: 4px;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  background: #192a39;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

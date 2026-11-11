@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Panel } from "./Panel";
 import type { WearEvent } from "./WearEventLog";
 
@@ -65,7 +65,7 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
   return snapshot;
 }
 
-export function WearAlertForm({ snapshot, settings = false }: { snapshot: WearAlertSnapshot | null; settings?: boolean }) {
+export function WearAlertForm({ snapshot, settings = false, bare = false }: { snapshot: WearAlertSnapshot | null; settings?: boolean; bare?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const prediction = snapshot?.prediction;
@@ -119,5 +119,47 @@ export function WearAlertForm({ snapshot, settings = false }: { snapshot: WearAl
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>
     </>
   );
-  return settings ? content : <Panel title="Mock tool wear prediction">{content}</Panel>;
+  return settings || bare ? content : <Panel title="Mock tool wear prediction">{content}</Panel>;
+}
+
+/** Header icon button that opens the mock prediction form in a popover. */
+export function WearAlertPopover({ snapshot }: { snapshot: WearAlertSnapshot | null }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const alerting = (snapshot?.alerts.length ?? 0) > 0;
+  return (
+    <div ref={rootRef} className="relative">
+      <button type="button" aria-label="Mock tool wear prediction" title="Mock tool wear prediction"
+        aria-expanded={open} aria-controls="wear-mock-popover" onClick={() => setOpen(v => !v)}
+        className={`relative flex h-8 w-8 items-center justify-center rounded-lg border transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 ${
+          open ? "border-[#3d8fd1]/50 bg-[#3d8fd1]/15 text-[#7eb6e8]"
+               : "border-[#243141] bg-[#121a24] text-[#8fa3b5] hover:border-[#3d8fd1]/40 hover:text-[#7eb6e8]"}`}>
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 3h6M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2.2h12.4a1.5 1.5 0 0 0 1.3-2.2L14 9V3" />
+          <path d="M7.5 15h9" />
+        </svg>
+        {alerting && <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400" />}
+      </button>
+      {open && (
+        <div id="wear-mock-popover" role="dialog" aria-label="Mock tool wear prediction"
+          className="absolute right-0 top-full z-50 mt-2 w-[min(92vw,420px)] rounded-xl border border-[#243141] bg-[#121a24] p-3.5 shadow-xl shadow-black/40">
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-[#8fa3b5]">Mock tool wear prediction</h2>
+          <WearAlertForm snapshot={snapshot} bare />
+        </div>
+      )}
+    </div>
+  );
 }

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { DrawingBalloon, JobContext } from "@/domain/opsDashboard";
 import { cn } from "@/lib/format";
 import { LiveClock } from "@/components/LiveClock";
@@ -18,6 +19,7 @@ export function JobContextHeader({
   onLayoutLockedChange,
   canLoadNext = false,
   onLoadNextPiece,
+  actions,
 }: {
   job: JobContext;
   selected: DrawingBalloon | null;
@@ -30,6 +32,8 @@ export function JobContextHeader({
   onLayoutLockedChange?: (locked: boolean) => void;
   canLoadNext?: boolean;
   onLoadNextPiece?: () => void;
+  /** Extra header controls rendered before the notifications icon. */
+  actions?: ReactNode;
 }) {
   const product =
     drawing?.jobId && drawing.jobId !== "_uploads"
@@ -118,6 +122,7 @@ export function JobContextHeader({
             LIVE
           </span>
           <LiveClock className="text-xs text-[#9eb0c0]" />
+          {actions}
           <span
             className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#243141] bg-[#121a24] text-sm text-[#8fa3b5]"
             title="Notifications"

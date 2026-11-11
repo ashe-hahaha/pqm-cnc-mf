@@ -133,12 +133,12 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
             <span aria-hidden="true">⚙</span>
           </button>
         }>
-          <div id="tool-wear-thresholds" hidden={!settingsOpen}>
+          <div id="tool-wear-thresholds" hidden={!settingsOpen} className="shrink-0">
             {settingsOpen && <div className="mb-3 border-b border-[#243141] pb-2">
               <WearAlertForm snapshot={wearDemo} settings />
             </div>}
           </div>
-          <ul aria-label="Tool selection" className="max-h-64 space-y-2 overflow-y-auto p-1">
+          <ul aria-label="Tool selection" className="min-h-0 flex-1 space-y-2 overflow-y-auto p-1">
             {tools.map(tool => {
               const sample = latestByTool[tool];
               const selected = tool === selectedTool;
