@@ -3,7 +3,7 @@ import json
 import logging
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,12 +15,13 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.signals import sse
+from app.wear_series import DEFAULT_QUALITY_SPEC, PREDICTION_SERIES, QUALITY_BALLOON_ID, TOOL_NO
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/tool-wear/demo")
 METRICS = ("diameter", "length")
-EVENTS_RETURNED = 100  # events included in the snapshot
-EVENTS_KEPT = 1000  # events retained in the database
+RESET_RECORDS = 8  # predictions the demo is reset to (series entries #1 … #8)
+HISTORY_RETURNED = 10  # predictions included in the snapshot (sliding window)
 
 
 class WearValues(BaseModel):
@@ -28,8 +29,17 @@ class WearValues(BaseModel):
     length: float = Field(ge=0, allow_inf_nan=False)
 
 
-class MockPrediction(WearValues):
-    toolNo: str = Field(default="167", min_length=1, max_length=64)
+class QualitySpec(BaseModel):
+    """Tolerance of the quality balloon as currently set in the UI: nominal +upperTol / -lowerTol."""
+    nominal: float = Field(allow_inf_nan=False)
+    upperTol: float = Field(ge=0, allow_inf_nan=False)
+    lowerTol: float = Field(ge=0, allow_inf_nan=False)
+
+
+class MockPrediction(BaseModel):
+    """Trigger request. `index` (1-based) picks a series entry; omitted = next in the cycle."""
+    index: int | None = Field(default=None, ge=1, le=len(PREDICTION_SERIES))
+    qualitySpec: QualitySpec | None = None
 
 
 class WearAlerts:
@@ -46,10 +56,9 @@ class WearAlerts:
                     seq INTEGER PRIMARY KEY, machine TEXT NOT NULL, tool TEXT NOT NULL, body TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS predictions_tool ON predictions(machine, tool, seq);
+                CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
+                INSERT OR IGNORE INTO cursor VALUES (1, 0);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS events (
-                    seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS outbox (
                     seq INTEGER PRIMARY KEY, destination TEXT NOT NULL, body TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0, due REAL NOT NULL DEFAULT 0
@@ -60,49 +69,93 @@ class WearAlerts:
         with closing(sqlite3.connect(self.path)) as db:
             thresholds = db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0]
             prediction = db.execute("SELECT body FROM predictions ORDER BY seq DESC LIMIT 1").fetchone()
+            history = db.execute("SELECT body FROM predictions WHERE tool=? ORDER BY seq DESC LIMIT ?",
+                                 (TOOL_NO, HISTORY_RETURNED)).fetchall()
+            cursor = db.execute("SELECT next_index FROM cursor WHERE id=1").fetchone()[0]
             alerts = db.execute("SELECT body FROM alerts ORDER BY seq DESC LIMIT 20").fetchall()
-            events = db.execute("SELECT body FROM events ORDER BY seq DESC LIMIT ?", (EVENTS_RETURNED,)).fetchall()
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
-                "alerts": [json.loads(row[0]) for row in alerts],
-                "events": [json.loads(row[0]) for row in reversed(events)]}
+                "history": [json.loads(row[0]) for row in reversed(history)],
+                "series": [{"index": i + 1, "diameter": d, "length": l, "quality": q}
+                           for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
+                "qualityBalloonId": QUALITY_BALLOON_ID,
+                "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
+                "alerts": [json.loads(row[0]) for row in alerts]}
 
     def set_thresholds(self, values: WearValues):
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE thresholds SET body=? WHERE id=1", (values.model_dump_json(),))
         return values
 
-    def record(self, values: MockPrediction):
-        now = datetime.now(timezone.utc).isoformat()
-        prediction = {"predictionId": str(uuid4()), "machineId": self.settings.signals_machine_id,
-                      "timestampUtc": now, "source": "mock", **values.model_dump()}
-        machine, tool = prediction["machineId"], values.toolNo
-        alert = None
+    def reset(self):
+        """Back to a known demo state: only the first RESET_RECORDS predictions, no alerts, events or pending sends.
+
+        Thresholds are kept. The next automatic trigger continues with the following series entry.
+        """
+        now = datetime.now(timezone.utc)
+        machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
+            for table in ("predictions", "alerts", "outbox"):
+                db.execute(f"DELETE FROM {table}")
+            for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
+                stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()
+                prediction = {"predictionId": str(uuid4()), "machineId": machine, "toolNo": TOOL_NO,
+                              "timestampUtc": stamp, "source": "mock", "index": i + 1,
+                              "diameter": diameter, "length": length,
+                              "balloonId": QUALITY_BALLOON_ID, "quality": quality, "exceeded": []}
+                db.execute("INSERT INTO predictions(machine, tool, body) VALUES (?, ?, ?)",
+                           (machine, TOOL_NO, json.dumps(prediction)))
+            db.execute("UPDATE cursor SET next_index=? WHERE id=1", (RESET_RECORDS % len(PREDICTION_SERIES),))
+        logger.info("Tool wear demo reset to the first %s predictions", RESET_RECORDS)
+
+    def record(self, values: MockPrediction):
+        now = datetime.now(timezone.utc).isoformat()
+        machine, tool = self.settings.signals_machine_id, TOOL_NO
+        alert = quality_alert = None
+        spec = values.qualitySpec or QualitySpec(
+            nominal=DEFAULT_QUALITY_SPEC[0], upperTol=DEFAULT_QUALITY_SPEC[1], lowerTol=DEFAULT_QUALITY_SPEC[2])
+        usl, lsl = round(spec.nominal + spec.upperTol, 9), round(spec.nominal - spec.lowerTol, 9)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            cursor = db.execute("SELECT next_index FROM cursor WHERE id=1").fetchone()[0]
+            position = (values.index - 1) if values.index else cursor % len(PREDICTION_SERIES)
+            diameter, length, quality = PREDICTION_SERIES[position]
+            db.execute("UPDATE cursor SET next_index=? WHERE id=1", ((position + 1) % len(PREDICTION_SERIES),))
+            prediction = {"predictionId": str(uuid4()), "machineId": machine, "toolNo": tool,
+                          "timestampUtc": now, "source": "mock", "index": position + 1,
+                          "diameter": diameter, "length": length,
+                          "balloonId": QUALITY_BALLOON_ID, "quality": quality}
             thresholds = json.loads(db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0])
-            row = db.execute(
-                "SELECT body FROM predictions WHERE machine=? AND tool=? ORDER BY seq DESC LIMIT 1",
-                (machine, tool),
-            ).fetchone()
-            previous = json.loads(row[0]) if row else {}
-            exceeded = [metric for metric in METRICS if prediction[metric] > thresholds[metric]]
-            triggered = [metric for metric in exceeded if metric not in previous.get("exceeded", [])]
+            # Every metric above its threshold alerts, even if the previous prediction was also above.
+            triggered = [metric for metric in METRICS if prediction[metric] > thresholds[metric]]
             db.execute("INSERT INTO predictions(machine, tool, body) VALUES (?, ?, ?)",
-                       (machine, tool, json.dumps({**prediction, "exceeded": exceeded})))
+                       (machine, tool, json.dumps({**prediction, "exceeded": triggered})))
             if triggered:
                 event = {"schemaVersion": "1.0.0", "eventType": "tool_wear_alert",
                          "alertId": str(uuid4()), "machineId": machine, "toolNo": tool,
                          "metrics": triggered, "timestampUtc": now, "source": "mock"}
-                alert = {**event, "prediction": prediction, "thresholds": thresholds}
+                alert = {**event, "kind": "tool_wear", "prediction": prediction, "thresholds": thresholds}
                 db.execute("INSERT INTO alerts(body) VALUES (?)", (json.dumps(alert),))
                 for destination in self.destinations:
                     db.execute("INSERT INTO outbox(destination, body) VALUES (?, ?)",
                                (destination, json.dumps(event)))
+            # Quality: alert when the predicted value leaves the tolerance band (events + Alerts only, no Kafka).
+            if quality > usl or quality < lsl:
+                side = "upper" if quality > usl else "lower"
+                quality_alert = {"kind": "quality", "alertId": str(uuid4()), "machineId": machine,
+                                 "toolNo": tool, "balloonId": QUALITY_BALLOON_ID, "timestampUtc": now,
+                                 "source": "mock", "value": quality, "side": side,
+                                 "limit": usl if side == "upper" else lsl,
+                                 "spec": {**spec.model_dump(), "usl": usl, "lsl": lsl}, "prediction": prediction}
+                db.execute("INSERT INTO alerts(body) VALUES (?)", (json.dumps(quality_alert),))
+        if quality_alert:
+            logger.info("Quality alert triggered alertId=%s machine=%s balloon=%s value=%s limit=%s",
+                        quality_alert["alertId"], machine, QUALITY_BALLOON_ID, quality, quality_alert["limit"])
         if alert:
             logger.info("Tool wear alert triggered alertId=%s machine=%s tool=%s metrics=%s",
                         alert["alertId"], machine, tool, ",".join(triggered))
-        return {"prediction": prediction, "alert": alert}
+        return {"prediction": prediction, "alert": alert, "qualityAlert": quality_alert}
 
     async def publish(self, event):
         topic = self.settings.tool_wear_alert_kafka_topic
@@ -188,13 +241,7 @@ class WearAlerts:
             "timestampUtc": timestamp or datetime.now(timezone.utc).isoformat(),
             "detail": detail,
         }
-        with closing(sqlite3.connect(self.path)) as db, db:
-            inserted = db.execute("INSERT OR IGNORE INTO events(id, body) VALUES (?, ?)",
-                                  (event["id"], json.dumps(event))).rowcount
-            if inserted:
-                db.execute("DELETE FROM events WHERE seq <= (SELECT MAX(seq) FROM events) - ?", (EVENTS_KEPT,))
-        if inserted:  # a repeated id (e.g. redelivered photo) is already stored and broadcast
-            self.notify_listeners("wear_event", event)
+        self.notify_listeners("wear_event", event)
 
     def log_photo(self, image):
         self.log_event("Photo received", image["toolNo"], timestamp=image["receivedAt"],
@@ -229,22 +276,38 @@ async def set_thresholds(request: Request, values: WearValues):
 @router.post("/prediction")
 async def mock_prediction(request: Request, values: MockPrediction):
     service = enabled_service(request)
-    service.log_event("Prediction started", values.toolNo, detail="Mock prediction")
+    service.log_event("Prediction started", TOOL_NO, detail="Mock prediction")
     await asyncio.sleep(3)
     result = await asyncio.to_thread(service.record, values)
     prediction = result["prediction"]
-    service.log_event("Prediction completed", values.toolNo, timestamp=prediction["timestampUtc"],
-                      detail=f"Diameter {values.diameter} mm · Length {values.length} mm")
+    service.log_event("Prediction completed", TOOL_NO, timestamp=prediction["timestampUtc"],
+                      detail=f'#{prediction["index"]} · Diameter {prediction["diameter"]} mm · Length {prediction["length"]} mm · B1 {prediction["quality"]} mm')
     alert = result["alert"]
     if alert:
         detail = " · ".join(
             f'{metric.capitalize()} {prediction[metric]} mm > {alert["thresholds"][metric]} mm'
             for metric in alert["metrics"]
         )
-        service.log_event("Alert triggered", values.toolNo, timestamp=alert["timestampUtc"],
+        service.log_event("Alert triggered", TOOL_NO, timestamp=alert["timestampUtc"],
                           detail=detail, event_id=f'{alert["alertId"]}:alert')
+    quality_alert = result["qualityAlert"]
+    if quality_alert:
+        comparison = ">" if quality_alert["side"] == "upper" else "<"
+        service.log_event("Quality alert triggered", TOOL_NO, timestamp=quality_alert["timestampUtc"],
+                          detail=f'{quality_alert["balloonId"].upper()} {quality_alert["value"]} mm {comparison} '
+                                 f'{"USL" if quality_alert["side"] == "upper" else "LSL"} {round(quality_alert["limit"], 6)} mm',
+                          event_id=f'{quality_alert["alertId"]}:alert')
     service.notify_listeners()
     return result
+
+
+@router.post("/reset")
+async def reset(request: Request):
+    service = enabled_service(request)
+    await asyncio.to_thread(service.reset)
+    service.notify_listeners("reset")
+    service.notify_listeners()
+    return service.snapshot()
 
 
 @router.get("/events")

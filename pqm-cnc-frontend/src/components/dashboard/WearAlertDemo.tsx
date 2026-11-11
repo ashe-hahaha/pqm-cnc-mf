@@ -5,21 +5,42 @@ import { Panel } from "./Panel";
 import type { WearEvent } from "./WearEventLog";
 
 type Values = { diameter: number; length: number };
-type Prediction = Values & { machineId: string; toolNo: string; timestampUtc: string };
-type WearAlert = {
+export type WearPrediction = Values & { machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
+type Prediction = WearPrediction;
+type ToolWearAlert = {
+  kind?: "tool_wear";
   alertId: string;
   timestampUtc: string;
   metrics: (keyof Values)[];
   prediction: Prediction;
   thresholds: Values;
 };
+/** Predicted quality value left the balloon's tolerance band. */
+type QualityAlert = {
+  kind: "quality";
+  alertId: string;
+  timestampUtc: string;
+  balloonId: string;
+  value: number;
+  side: "upper" | "lower";
+  limit: number;
+  prediction: Prediction;
+};
+export type WearAlert = ToolWearAlert | QualityAlert;
+export type QualitySpec = { nominal: number; upperTol: number; lowerTol: number };
 export type WearAlertSnapshot = {
   enabled: boolean;
   thresholds: Values;
   prediction: Prediction | null;
+  /** Latest predictions for the fixed tool (oldest first, sliding window). */
+  history?: WearPrediction[];
+  /** Fixed prediction values that each trigger cycles through. */
+  series?: { index: number; diameter: number; length: number; quality?: number }[];
+  /** Balloon the quality value of each prediction belongs to. */
+  qualityBalloonId?: string;
+  /** 1-based index the next automatic trigger will use. */
+  nextIndex?: number;
   alerts: WearAlert[];
-  /** Recent persisted events, oldest first. */
-  events?: WearEvent[];
 };
 
 const base = (process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
@@ -28,10 +49,11 @@ const fields = ["diameter", "length"] as const;
 const fieldStyle = "w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]";
 const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5d8fa] disabled:opacity-50";
 
-export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
+export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void, onReset?: () => void) {
   const [snapshot, setSnapshot] = useState<WearAlertSnapshot | null>(null);
   const onEventRef = useRef(onEvent);
-  useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
+  const onResetRef = useRef(onReset);
+  useEffect(() => { onEventRef.current = onEvent; onResetRef.current = onReset; }, [onEvent, onReset]);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
       const response = await fetch(endpoint, { cache: "no-store", signal });
@@ -39,7 +61,6 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
         const data: WearAlertSnapshot = await response.json();
         if (!signal?.aborted) {
           setSnapshot(data);
-          if (data.events?.length) onEventRef.current?.(data.events);
         }
       }
     } catch {
@@ -56,8 +77,9 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
     };
     const stream = new EventSource(`${endpoint}/events`);
     stream.addEventListener("updated", load);
+    stream.addEventListener("reset", () => onResetRef.current?.());
     stream.addEventListener("wear_event", event => {
-      onEvent?.([JSON.parse((event as MessageEvent).data) as WearEvent]);
+      onEventRef.current?.([JSON.parse((event as MessageEvent).data) as WearEvent]);
     });
     const timer = window.setInterval(load, 5000);
     document.addEventListener("visibilitychange", load);
@@ -68,20 +90,32 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", load);
     };
-  }, [refresh, onEvent]);
+  }, [refresh]);
   return snapshot;
 }
 
-export function WearAlertForm({ snapshot, settings = false, bare = false }: { snapshot: WearAlertSnapshot | null; settings?: boolean; bare?: boolean }) {
+export function WearAlertForm({ snapshot, settings = false, bare = false, qualitySpec }: {
+  snapshot: WearAlertSnapshot | null; settings?: boolean; bare?: boolean;
+  /** Current tolerance of the quality balloon; the backend alerts when the predicted value leaves it. */
+  qualitySpec?: QualitySpec;
+}) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [selected, setSelected] = useState("auto");
+  const [confirmReset, setConfirmReset] = useState(false);
+  useEffect(() => {
+    if (!confirmReset) return;
+    const timer = window.setTimeout(() => setConfirmReset(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [confirmReset]);
   const prediction = snapshot?.prediction;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const values = { diameter: Number(form.get("diameter")), length: Number(form.get("length")) };
-    const body = settings ? values : { ...values, toolNo: String(form.get("toolNo")).trim() };
+    const body = settings
+      ? { diameter: Number(form.get("diameter")), length: Number(form.get("length")) }
+      : { ...(selected === "auto" ? {} : { index: Number(selected) }), ...(qualitySpec ? { qualitySpec } : {}) };
     setBusy(true);
     setMessage("");
     try {
@@ -92,7 +126,28 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: { sn
       });
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       const result = await response.json();
-      setMessage(settings ? "Thresholds saved." : result.alert ? "Prediction recorded. Alert triggered." : "Prediction recorded.");
+      if (!settings) setSelected("auto");
+      setMessage(settings ? "Thresholds saved." : result.alert || result.qualityAlert ? "Prediction recorded. Alert triggered." : "Prediction recorded.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Request failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reset() {
+    if (!confirmReset) {
+      setConfirmReset(true);
+      return;
+    }
+    setConfirmReset(false);
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`${endpoint}/reset`, { method: "POST" });
+      if (!response.ok) throw new Error(`Request failed (${response.status})`);
+      setSelected("auto");
+      setMessage("Reset to the first 8 predictions.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Request failed.");
     } finally {
@@ -105,22 +160,39 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: { sn
       {!settings && (
         <p className="text-xs text-[#a5bdd0]">
           {prediction
-            ? `${prediction.machineId} · Tool ${prediction.toolNo} · Diameter ${prediction.diameter} mm · Length ${prediction.length} mm · ${new Date(prediction.timestampUtc).toLocaleString()}`
+            ? `${prediction.machineId} · Tool ${prediction.toolNo}${prediction.index ? ` · #${prediction.index}` : ""} · Diameter ${prediction.diameter} mm · Length ${prediction.length} mm · ${new Date(prediction.timestampUtc).toLocaleString()}`
             : "No mock prediction yet."}
         </p>
       )}
       <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={submit}>
-        {!settings && <label>Tool number<input className={fieldStyle} name="toolNo" defaultValue="167" required maxLength={64} /></label>}
-        {fields.map(field => (
-          <label key={`${field}:${settings ? snapshot?.thresholds[field] : "mock"}`}>
-            {field === "diameter" ? "Diameter" : "Length"} {settings ? "threshold" : "prediction"} (mm)
+        {settings ? fields.map(field => (
+          <label key={`${field}:${snapshot?.thresholds[field]}`}>
+            {field === "diameter" ? "Diameter" : "Length"} threshold (mm)
             <input className={fieldStyle} name={field} type="number" min="0" step="any" required
-              defaultValue={settings ? snapshot?.thresholds[field] ?? 999 : 0} />
+              defaultValue={snapshot?.thresholds[field] ?? 999} />
           </label>
-        ))}
+        )) : (
+          <label className="min-w-0 flex-1">Next value
+            <select className={fieldStyle} value={selected} onChange={event => setSelected(event.target.value)}>
+              <option value="auto">Auto{snapshot?.nextIndex ? ` (next: #${snapshot.nextIndex})` : ""}</option>
+              {(snapshot?.series ?? []).map(item => (
+                <option key={item.index} value={item.index}>
+                  #{item.index} · Diameter {item.diameter} · Length {item.length} · B1 {item.quality ?? "–"} mm
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button className={buttonStyle} disabled={busy || !snapshot?.enabled}>
-          {settings ? "Save thresholds" : busy ? "Predicting…" : "Submit mock prediction"}
+          {settings ? "Save thresholds" : busy ? "Predicting…" : "Trigger prediction"}
         </button>
+        {!settings && (
+          <button type="button" onClick={reset} disabled={busy || !snapshot?.enabled}
+            title="Clear alerts and events and keep only the first 8 predictions"
+            className={`${buttonStyle} ${confirmReset ? "border-amber-500/60 text-amber-300" : ""}`}>
+            {confirmReset ? "Confirm reset?" : "Reset to first 8"}
+          </button>
+        )}
       </form>
       {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>
@@ -130,7 +202,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: { sn
 }
 
 /** Header icon button that opens the mock prediction form in a popover. */
-export function WearAlertPopover({ snapshot }: { snapshot: WearAlertSnapshot | null }) {
+export function WearAlertPopover({ snapshot, qualitySpec }: { snapshot: WearAlertSnapshot | null; qualitySpec?: QualitySpec }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -164,7 +236,7 @@ export function WearAlertPopover({ snapshot }: { snapshot: WearAlertSnapshot | n
         <div id="wear-mock-popover" role="dialog" aria-label="Mock tool wear prediction"
           className="absolute right-0 top-full z-50 mt-2 w-[min(92vw,420px)] rounded-xl border border-[#243141] bg-[#121a24] p-3.5 shadow-xl shadow-black/40">
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-[#8fa3b5]">Mock tool wear prediction</h2>
-          <WearAlertForm snapshot={snapshot} bare />
+          <WearAlertForm snapshot={snapshot} bare qualitySpec={qualitySpec} />
         </div>
       )}
     </div>

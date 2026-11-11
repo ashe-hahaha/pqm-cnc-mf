@@ -13,10 +13,12 @@ export function QualityTrend({
   balloonCode,
   characteristic,
   points,
+  emptyMessage = "No trend series for this balloon.",
 }: {
   balloonCode: string | null;
   characteristic?: string;
   points: QualityTrendPoint[];
+  emptyMessage?: string;
 }) {
   const measured = points.filter((p) => p.qcValue != null);
   const title = balloonCode
@@ -32,7 +34,7 @@ export function QualityTrend({
     <TrendPanel
       id="trends"
       title={title}
-      description={<>{points.length || 20} predicted · {measured.length} measured (reference) · LSL–USL band</>}
+      description={<>{points.length} predicted · mock data{measured.length > 0 ? ` · ${measured.length} measured (reference)` : ""} · LSL–USL band</>}
       status={
         last ? (
           <span
@@ -48,7 +50,7 @@ export function QualityTrend({
     >
       {points.length === 0 ? (
         <p className="mt-2 text-xs text-[#8fa3b5]">
-          No trend series for this balloon.
+          {emptyMessage}
         </p>
       ) : (
         <TrendChart points={points} />

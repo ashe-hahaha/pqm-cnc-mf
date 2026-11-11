@@ -4,6 +4,26 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ToolWearDashboard } from "./ToolWearDashboard";
 
+it("opens the session event history from the latest event row", async () => {
+  const row = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
+  expect(row().textContent).toContain("No event");
+  await act(async () => root.render(React.createElement(ToolWearDashboard, {
+    currentTool: "T25",
+    events: [
+      { id: "start", timestampUtc: "2026-11-11T00:00:00Z", label: "Prediction started", toolNo: "25" },
+      { id: "done", timestampUtc: "2026-11-11T00:00:03Z", label: "Prediction completed", toolNo: "25" },
+    ],
+  })));
+  expect(row().textContent).toContain("Prediction completed");
+  const dialog = host.querySelector<HTMLDialogElement>('dialog[aria-label="Tool wear event history"]')!;
+  Object.defineProperty(dialog, "showModal", { value: () => dialog.setAttribute("open", "") });
+  await act(async () => row().click());
+  expect(dialog.open).toBe(true);
+  expect([...dialog.querySelectorAll("li > p")].map(item => item.textContent)).toEqual([
+    "T25 · Prediction completed", "T25 · Prediction started",
+  ]);
+});
+
 vi.mock("@/lib/useToolImage", () => ({ useToolImage: () => ({ status: "connected", image: {
   captureId: "capture-167", machineId: "Makino_01", toolNo: "167", timestampUtc: "2026-11-03T09:20:20Z",
   imageUrl: "http://127.0.0.1:8000/api/tool-images/capture-167/image", inspectionResult: "Wear checked",

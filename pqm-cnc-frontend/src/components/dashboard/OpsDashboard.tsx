@@ -43,6 +43,17 @@ import { ProcessContextPanel } from "./ProcessContextPanel";
 import { QualityTrend } from "./QualityTrend";
 import { ColResizeHandle, ResizableBox } from "./ResizableBox";
 import { linkBalloonDetailAndTrend } from "@/lib/qualityTrend";
+import {
+  applyTolerances,
+  readTolerances,
+  writeTolerances,
+  type Tolerance,
+} from "@/lib/balloonTolerance";
+import {
+  qualityPredictionFromHistory,
+  qualityRisk,
+  qualityTrendFromHistory,
+} from "@/lib/qualityPredictions";
 import { useMachiningSim } from "@/sim/useMachiningSim";
 
 const DRAWING_STORAGE_KEY = "pqm.ops.activeDrawing";
@@ -103,10 +114,18 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
       setWearEvents(previous => [...previous, ...fresh].sort((a, b) => Date.parse(a.timestampUtc) - Date.parse(b.timestampUtc)));
     }
   }, []);
-  const wearDemo = useWearAlertDemo(appendWearEvents);
+  const resetWearEvents = useCallback(() => {
+    seenWearEvents.current.clear();
+    setWearEvents([]);
+  }, []);
+  const wearDemo = useWearAlertDemo(appendWearEvents, resetWearEvents);
   const [monitor, setMonitor] = useState<"quality" | "tool-wear">("quality");
+  // Start on B1: it is the balloon driven by the prediction series, so its trend is visible right away.
   const initialInspectId =
-    seed.job.currentBalloonId ?? seed.balloons[0]?.id ?? null;
+    seed.balloons.find((b) => b.id === "b1")?.id ??
+    seed.job.currentBalloonId ??
+    seed.balloons[0]?.id ??
+    null;
   /** Drawing highlight + detail/trend — only changes on user balloon click. */
   const [inspectId, setInspectId] = useState<string | null>(initialInspectId);
   const [inspect, setInspect] = useState<InspectSnapshot | null>(() =>
@@ -249,7 +268,20 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [status.canLoadNext, loadNextPiece]);
 
-  const allBalloons = data.balloons;
+  // Tolerances set from Selected Balloon Detail (kept in this browser).
+  const [tolerances, setTolerances] = useState<Record<string, Tolerance>>({});
+  useEffect(() => { setTolerances(readTolerances()); }, []);
+  const handleToleranceChange = useCallback((balloonId: string, tolerance: Tolerance) => {
+    setTolerances((previous) => {
+      const next = { ...previous, [balloonId]: tolerance };
+      writeTolerances(next);
+      return next;
+    });
+  }, []);
+  const allBalloons = useMemo(
+    () => applyTolerances(data.balloons, tolerances),
+    [data.balloons, tolerances],
+  );
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),
@@ -288,6 +320,36 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     setInspect(snapshotInspect(id, allBalloons, data));
     if (status.phase === "review") setReviewProcessId(id);
   }
+
+  // The quality balloon (B1) is driven by the backend's fixed prediction series instead of simulated data.
+  const qualityHistory = wearDemo?.history;
+  const qualityBalloonId = wearDemo?.qualityBalloonId ?? "b1";
+  // Always the balloon with the user's tolerance applied (inspect holds a snapshot from selection time).
+  const inspectBalloon = useMemo(
+    () => (inspect ? allBalloons.find((b) => b.id === inspect.balloon.id) ?? inspect.balloon : null),
+    [inspect, allBalloons],
+  );
+  const isQualityBalloon = inspectBalloon != null && inspectBalloon.id === qualityBalloonId;
+  const qualityBalloon = allBalloons.find((b) => b.id === qualityBalloonId);
+  const qualitySpec = qualityBalloon
+    ? { nominal: qualityBalloon.nominal, upperTol: qualityBalloon.upperTol, lowerTol: qualityBalloon.lowerTol }
+    : undefined;
+  const qualityTrend = useMemo(
+    () => (isQualityBalloon && inspectBalloon ? qualityTrendFromHistory(qualityHistory ?? [], inspectBalloon) : []),
+    [isQualityBalloon, inspectBalloon, qualityHistory],
+  );
+  const detailPrediction = useMemo(
+    () => (isQualityBalloon && inspectBalloon
+      ? qualityPredictionFromHistory(qualityHistory ?? [], inspectBalloon)
+      : inspect?.prediction ?? null),
+    [isQualityBalloon, inspect, inspectBalloon, qualityHistory],
+  );
+  const detailBalloon = useMemo(
+    () => (isQualityBalloon && inspectBalloon && detailPrediction
+      ? { ...inspectBalloon, risk: qualityRisk(detailPrediction.predictedValue, inspectBalloon) }
+      : inspectBalloon),
+    [isQualityBalloon, inspectBalloon, detailPrediction],
+  );
 
   const summary = useMemo(() => balloonSummary(allBalloons), [allBalloons]);
 
@@ -357,7 +419,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           onLayoutLockedChange={setLayoutLocked}
           canLoadNext={status.canLoadNext}
           onLoadNextPiece={loadNextPiece}
-          actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} /> : undefined}
+          actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} qualitySpec={qualitySpec} /> : undefined}
         />
 
         <div className="flex-1 overflow-auto p-3">
@@ -493,8 +555,12 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                 onHeightChange={setBoxHeight}
               >
                 <BalloonDetail
-                  balloon={inspect?.balloon ?? null}
-                  prediction={inspect?.prediction ?? null}
+                  balloon={detailBalloon}
+                  prediction={detailPrediction}
+                  onToleranceChange={handleToleranceChange}
+                  emptyHint={isQualityBalloon
+                    ? "No prediction yet — trigger one from the flask icon in the top bar."
+                    : undefined}
                 />
               </DashBox>
               <DashBox
@@ -505,9 +571,12 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                 onHeightChange={setBoxHeight}
               >
                 <QualityTrend
-                  balloonCode={inspect?.balloon.code ?? null}
-                  characteristic={inspect?.balloon.characteristic}
-                  points={inspect?.trend ?? []}
+                  balloonCode={inspectBalloon?.code ?? null}
+                  characteristic={inspectBalloon?.characteristic}
+                  points={qualityTrend}
+                  emptyMessage={isQualityBalloon
+                    ? "No prediction yet — trigger one from the flask icon in the top bar."
+                    : "No trend series for this balloon — select B1 to see the prediction series."}
                 />
               </DashBox>
               <DashBox
@@ -517,7 +586,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                 locked={dashLayout.locked}
                 onHeightChange={setBoxHeight}
               >
-                <ToolWearTrend />
+                <ToolWearTrend snapshot={wearDemo} />
               </DashBox>
               <DashBox
                 id="alerts"
@@ -528,15 +597,24 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
               >
                 <OpsAlerts
                   alerts={[
-                    ...(wearDemo?.alerts ?? []).map(alert => ({
-                      id: alert.alertId,
-                      severity: "high_risk" as const,
-                      title: `Tool wear alert · Tool ${alert.prediction.toolNo}`,
-                      detail: alert.metrics.map(metric =>
-                        `${metric}: ${alert.prediction[metric]} mm > ${alert.thresholds[metric]} mm`
-                      ).join(" · "),
-                      time: new Date(alert.timestampUtc).toLocaleTimeString(),
-                    })),
+                    ...(wearDemo?.alerts ?? []).map(alert => alert.kind === "quality"
+                      ? {
+                        id: alert.alertId,
+                        severity: "high_risk" as const,
+                        title: `Quality alert · ${alert.balloonId.toUpperCase()}`,
+                        detail: `Predicted ${alert.value} mm ${alert.side === "upper" ? ">" : "<"} ${alert.side === "upper" ? "USL" : "LSL"} ${Math.round(alert.limit * 1e6) / 1e6} mm`,
+                        time: new Date(alert.timestampUtc).toLocaleTimeString(),
+                        balloonId: alert.balloonId,
+                      }
+                      : {
+                        id: alert.alertId,
+                        severity: "high_risk" as const,
+                        title: `Tool wear alert · Tool ${alert.prediction.toolNo}`,
+                        detail: alert.metrics.map(metric =>
+                          `${metric}: ${alert.prediction[metric]} mm > ${alert.thresholds[metric]} mm`
+                        ).join(" · "),
+                        time: new Date(alert.timestampUtc).toLocaleTimeString(),
+                      }),
                     ...data.alerts,
                   ]}
                   onFocusBalloon={handleSelectBalloon}
