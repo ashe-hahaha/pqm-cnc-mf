@@ -37,6 +37,7 @@ import { OpsRecommendations } from "./OpsRecommendations";
 import { OpsSidebar } from "./OpsSidebar";
 import { ToolWearDashboard } from "./ToolWearDashboard";
 import { useWearAlertDemo, WearAlertForm } from "./WearAlertDemo";
+import type { WearEvent } from "./WearEventLog";
 import { ToolWearTrend } from "./ToolWearTrend";
 import { ProcessContextPanel } from "./ProcessContextPanel";
 import { QualityTrend } from "./QualityTrend";
@@ -90,7 +91,17 @@ type InspectSnapshot = {
 };
 
 export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
-  const wearDemo = useWearAlertDemo();
+  const [wearEvents, setWearEvents] = useState<WearEvent[]>([]);
+  const seenWearEvents = useRef(new Set<string>());
+  const appendWearEvents = useCallback((events: WearEvent[]) => {
+    const fresh = events.filter(event => {
+      if (seenWearEvents.current.has(event.id)) return false;
+      seenWearEvents.current.add(event.id);
+      return true;
+    });
+    if (fresh.length) setWearEvents(previous => [...previous, ...fresh]);
+  }, []);
+  const wearDemo = useWearAlertDemo(appendWearEvents);
   const [monitor, setMonitor] = useState<"quality" | "tool-wear">("quality");
   const initialInspectId =
     seed.job.currentBalloonId ?? seed.balloons[0]?.id ?? null;
@@ -356,7 +367,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <p className="text-[10px] uppercase tracking-[0.12em] text-[#70889c]">{monitor === 'quality' ? 'Feature-level quality monitoring' : 'Tool-level condition monitoring'}</p>
           </div>
           <div id="monitor-tool-wear" role="tabpanel" aria-labelledby="tab-tool-wear" hidden={monitor !== 'tool-wear'}>
-            <ToolWearDashboard currentTool={data.job.currentTool} locked={dashLayout.locked} wearDemo={wearDemo} />
+            <ToolWearDashboard currentTool={data.job.currentTool} locked={dashLayout.locked} wearDemo={wearDemo} events={wearEvents} onEvents={appendWearEvents} />
           </div>
           <div id="monitor-quality" role="tabpanel" aria-labelledby="tab-quality" hidden={monitor !== 'quality'}>
           <div className="mb-3"><WearAlertForm snapshot={wearDemo} /></div>
@@ -518,7 +529,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                     ...(wearDemo?.alerts ?? []).map(alert => ({
                       id: alert.alertId,
                       severity: "high_risk" as const,
-                      title: `Mock tool wear alert · Tool ${alert.prediction.toolNo}`,
+                      title: `Tool wear alert · Tool ${alert.prediction.toolNo}`,
                       detail: alert.metrics.map(metric =>
                         `${metric}: ${alert.prediction[metric]} mm > ${alert.thresholds[metric]} mm`
                       ).join(" · "),

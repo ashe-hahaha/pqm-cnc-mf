@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Panel } from "./Panel";
+import type { WearEvent } from "./WearEventLog";
 
 type Values = { diameter: number; length: number };
 type Prediction = Values & { machineId: string; toolNo: string; timestampUtc: string };
@@ -25,7 +26,7 @@ const fields = ["diameter", "length"] as const;
 const fieldStyle = "w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]";
 const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5d8fa] disabled:opacity-50";
 
-export function useWearAlertDemo() {
+export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
   const [snapshot, setSnapshot] = useState<WearAlertSnapshot | null>(null);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -48,6 +49,9 @@ export function useWearAlertDemo() {
     };
     const stream = new EventSource(`${endpoint}/events`);
     stream.addEventListener("updated", load);
+    stream.addEventListener("wear_event", event => {
+      onEvent?.([JSON.parse((event as MessageEvent).data) as WearEvent]);
+    });
     const timer = window.setInterval(load, 5000);
     document.addEventListener("visibilitychange", load);
     load();
@@ -57,7 +61,7 @@ export function useWearAlertDemo() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", load);
     };
-  }, [refresh]);
+  }, [refresh, onEvent]);
   return snapshot;
 }
 
@@ -108,7 +112,7 @@ export function WearAlertForm({ snapshot, settings = false }: { snapshot: WearAl
           </label>
         ))}
         <button className={buttonStyle} disabled={busy || !snapshot?.enabled}>
-          {settings ? "Save thresholds" : "Submit mock prediction"}
+          {settings ? "Save thresholds" : busy ? "Predicting…" : "Submit mock prediction"}
         </button>
       </form>
       {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}

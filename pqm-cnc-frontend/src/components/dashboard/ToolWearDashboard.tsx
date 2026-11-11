@@ -1,15 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { useControllerData, controllerOffset } from "@/lib/useControllerData";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useControllerData, controllerOffset, type ControllerRow } from "@/lib/useControllerData";
 import { Panel } from "./Panel";
 import { ToolImageBlock } from "./ToolImageBlock";
 import { ResizableToolBlock } from "./ResizableToolBlock";
 import { ColResizeHandle } from "./ResizableBox";
 import { useWearHistory } from "@/lib/useWearHistory";
 import { WearHistoryChart } from "./WearHistoryChart";
-import { toolLabel } from "@/lib/toolNumber";
+import { toolKey, toolLabel } from "@/lib/toolNumber";
+import { WearEventLog, type WearEvent } from "./WearEventLog";
 import { WearAlertForm, type WearAlertSnapshot } from "./WearAlertDemo";
+
+const DEFAULT_TOOL = "25";
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HISTORY_DAYS = 7;
+
+function dateBounds(start: string, end: string) {
+  return {
+    start: new Date(`${start}T00:00:00Z`).toISOString(),
+    end: new Date(Date.parse(`${end}T00:00:00Z`) + DAY_MS).toISOString(),
+  };
+}
 
 const METRICS = [
   { key: "diameter", axis: "x", label: "Diameter wear", color: "#38bdf8" },
@@ -17,36 +29,91 @@ const METRICS = [
 ] as const;
 
 /** Controller readouts and wear history for the selected tool. */
-export function ToolWearDashboard({ locked = false, wearDemo = null }: {
+export function ToolWearDashboard({ locked = false, wearDemo = null, events = [], onEvents }: {
   currentTool: string;
   locked?: boolean;
   wearDemo?: WearAlertSnapshot | null;
+  events?: readonly WearEvent[];
+  onEvents?: (events: WearEvent[]) => void;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { latestByTool, status: controllerStatus } = useControllerData(true);
-  const [selectedTool, setSelectedTool] = useState("30");
-  const [minutes, setMinutes] = useState(60);
+  const logSamples = useCallback((rows: ControllerRow[], receivedAt: string, machine: string) => {
+    if (!onEvents) return;
+    const received = rows.flatMap(row => {
+      const x = controllerOffset(row, "x").wear;
+      const z = controllerOffset(row, "z").wear;
+      if (x === null && z === null) return [];
+      const values = [
+        x === null ? null : `X wear ${x} mm`,
+        z === null ? null : `Z wear ${z} mm`,
+      ].filter(Boolean);
+      return [{
+        id: JSON.stringify(["actual-wear", machine, toolKey(row.tool_no), row.timestamp]),
+        label: "Actual wear received",
+        toolNo: row.tool_no ?? null,
+        timestampUtc: receivedAt,
+        detail: values.join(" · "),
+      }];
+    });
+    onEvents(received);
+  }, [onEvents]);
+  const { latestByTool, status: controllerStatus } = useControllerData(true, logSamples);
+  const [selectedTool, setSelectedTool] = useState(DEFAULT_TOOL);
+  const [dates, setDates] = useState({ start: "", end: "" });
   const [bounds, setBounds] = useState<{ start: string; end: string } | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  const history = useWearHistory(minutes, bounds?.start, bounds?.end, selectedTool);
-  const [columns, setColumns] = useState({ tools: 240, diameter: 50 });
+  const history = useWearHistory(HISTORY_DAYS * 24 * 60, bounds?.start, bounds?.end, selectedTool, bounds !== null);
+  const [columns, setColumns] = useState({ tools: 240, diameter: 50, history: 50 });
   const gridRef = useRef<HTMLDivElement>(null);
   const controller = latestByTool[selectedTool];
-  const tools = [...new Set(["30", "6", ...Object.keys(latestByTool), ...history.discoveredTools])];
+  const historyData = history.data;
+  const tools = [...new Set([DEFAULT_TOOL, ...Object.keys(latestByTool), ...history.discoveredTools])];
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
         const saved = JSON.parse(localStorage.getItem("pqm.toolWear.columns") ?? "null");
-        if (saved && Number.isFinite(saved.tools) && saved.tools >= 180 && Number.isFinite(saved.diameter) && saved.diameter >= 10 && saved.diameter <= 90) setColumns(saved);
+        if (saved && Number.isFinite(saved.tools) && saved.tools >= 180 && Number.isFinite(saved.diameter) && saved.diameter >= 10 && saved.diameter <= 90) {
+          const history = Number.isFinite(saved.history) && saved.history >= 10 && saved.history <= 90 ? saved.history : 50;
+          setColumns({ tools: saved.tools, diameter: saved.diameter, history });
+        }
       } catch { /* defaults */ }
     }, 0);
     return () => clearTimeout(timer);
   }, []);
-  function resizeColumns(kind: "tools" | "diameter", delta: number) {
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      const end = new Date(now).toISOString().slice(0, 10);
+      const start = new Date(now - (HISTORY_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
+      setDates({ start, end });
+      setBounds(dateBounds(start, end));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  function changeDate(field: "start" | "end", value: string) {
+    const next = { ...dates, [field]: value };
+    setDates(next);
+    if (!next.start || !next.end || next.end < next.start) {
+      setRangeError("Choose a start date on or before the end date.");
+      return;
+    }
+    const nextBounds = dateBounds(next.start, next.end);
+    if (Date.parse(nextBounds.end) - Date.parse(nextBounds.start) > HISTORY_DAYS * DAY_MS) {
+      setRangeError("Choose a range of up to 7 days.");
+      return;
+    }
+    setRangeError(null);
+    setBounds(nextBounds);
+  }
+
+  function resizeColumns(kind: "tools" | "diameter" | "history", delta: number) {
     if (locked) return;
     const availableWidth = gridRef.current?.getBoundingClientRect().width || 800;
     setColumns((prev) => {
-      const next = kind === "tools" ? { ...prev, tools: Math.max(180, prev.tools + delta) } : { ...prev, diameter: Math.max(10, Math.min(90, prev.diameter + delta / availableWidth * 100)) };
+      const next = kind === "tools"
+        ? { ...prev, tools: Math.max(180, prev.tools + delta) }
+        : { ...prev, [kind]: Math.max(10, Math.min(90, prev[kind] + delta / Math.max(1, availableWidth - 8) * 100)) };
       try { localStorage.setItem("pqm.toolWear.columns", JSON.stringify(next)); } catch { /* unavailable */ }
       return next;
     });
@@ -58,7 +125,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null }: {
 
       <div className="grid grid-cols-1 items-start gap-y-2 lg:grid-cols-[var(--tools-width)_8px_minmax(0,1fr)]" style={{ "--tools-width": `${columns.tools}px` } as CSSProperties}>
         <ResizableToolBlock id="tools" width={240} height={500} locked={locked} fillWidth>
-        <Panel title="Tool" titleRight={
+        <Panel title="Tools" titleRight={
           <button type="button" aria-label="Prediction alert thresholds" title="Prediction alert thresholds"
             aria-expanded={settingsOpen} aria-controls="tool-wear-thresholds"
             onClick={() => setSettingsOpen(open => !open)}
@@ -71,42 +138,61 @@ export function ToolWearDashboard({ locked = false, wearDemo = null }: {
               <WearAlertForm snapshot={wearDemo} settings />
             </div>}
           </div>
-          <label className="block text-xs text-[#8296a8]">Selected tool
-            <select aria-label="Selected tool" value={selectedTool} onChange={event => setSelectedTool(event.target.value)}
-              className="mt-2 w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]">
-              {tools.map(tool => <option key={tool} value={tool}>{toolLabel(tool)}</option>)}
-            </select>
-          </label>
-          {controller && <p className="mt-2 text-[11px] text-[#8296a8]">Last controller sample · {new Date(controller.timestamp).toLocaleString()}</p>}
-          <label className="mt-5 block text-xs text-[#8296a8]">History range
-            <select aria-label="Wear history range" value={bounds ? "custom" : String(minutes)} onChange={event => {
-              if (event.target.value !== "custom") { setMinutes(Number(event.target.value)); setBounds(null); setRangeError(null); }
-            }} className="mt-2 w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]">
-              <option value="15">Latest 15 minutes</option><option value="60">Latest 1 hour</option><option value="480">Latest 8 hours</option>
-              {bounds && <option value="custom">Custom range</option>}
-            </select>
-          </label>
-          <details className="mt-4 text-xs text-[#8296a8]"><summary className="cursor-pointer">Custom time range</summary>
-            <form className="mt-2 space-y-2" onSubmit={event => {
-              event.preventDefault();
-              const form = new FormData(event.currentTarget);
-              const start = new Date(String(form.get("start"))), end = new Date(String(form.get("end")));
-              if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) { setRangeError("End must be after start."); return; }
-              setBounds({ start: start.toISOString(), end: end.toISOString() }); setRangeError(null);
-            }}>
-              <label className="block">Start (local time)<input name="start" type="datetime-local" required className="mt-1 w-full rounded bg-[#0c1722] p-1" /></label>
-              <label className="block">End (local time)<input name="end" type="datetime-local" required className="mt-1 w-full rounded bg-[#0c1722] p-1" /></label>
-              <button className="rounded border border-[#314254] px-3 py-1.5" type="submit">Apply range</button>
-            </form>
-            {rangeError && <p role="alert" className="mt-2 text-amber-400">{rangeError}</p>}
-          </details>
-          <p className="mt-4 text-[10px] text-[#70889c]">Controller compensation history · mm · refreshes every 5 seconds</p>
-          {history.data && <p className="mt-2 text-[10px] text-[#70889c]">{history.data.machine_id} · {history.data.environment}</p>}
+          <ul aria-label="Tool selection" className="max-h-64 space-y-2 overflow-y-auto p-1">
+            {tools.map(tool => {
+              const sample = latestByTool[tool];
+              const selected = tool === selectedTool;
+              return (
+                <li key={tool}>
+                  <button
+                    type="button"
+                    aria-label={toolLabel(tool)}
+                    aria-pressed={selected}
+                    onClick={() => setSelectedTool(tool)}
+                    className={`w-full cursor-pointer rounded-lg border border-l-[3px] px-3 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                      selected
+                        ? "border-sky-400/50 border-l-sky-400 bg-[#142c40]"
+                        : "border-[#293b4c] bg-[#0e1823] hover:border-[#496177] hover:bg-[#172636]"
+                    }`}
+                  >
+                    <span className="flex items-center justify-between gap-2">
+                      <strong className="text-sm text-foreground">{toolLabel(tool)}</strong>
+                      {selected && <span className="text-[10px] text-sky-300">Selected</span>}
+                    </span>
+                    {sample ? (
+                      <>
+                        <span className="mt-2 grid grid-cols-2 gap-2">
+                          {METRICS.map(metric => {
+                            const wear = controllerOffset(sample, metric.axis).wear;
+                            return (
+                              <span key={metric.key}>
+                                <span className="block text-[10px] text-[#8296a8]">{metric.axis.toUpperCase()} wear</span>
+                                <span className="text-xs font-medium tabular-nums" style={{ color: metric.color }}>
+                                  {wear === null ? "—" : `${wear.toFixed(3)} mm`}
+                                </span>
+                              </span>
+                            );
+                          })}
+                        </span>
+                        <span className="mt-1.5 block text-[10px] text-[#8296a8]">
+                          Sampled <time dateTime={sample.timestamp}>{new Date(sample.timestamp).toLocaleString()}</time>
+                        </span>
+                        <span className="block text-[10px] text-[#8296a8]">
+                          Received <time dateTime={sample.receivedAt}>{new Date(sample.receivedAt).toLocaleString()}</time>
+                        </span>
+                      </>
+                    ) : <span className="mt-1.5 block text-[10px] text-[#8296a8]">No controller sample yet</span>}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </Panel>
         </ResizableToolBlock>
         <div className="hidden h-full lg:flex"><ColResizeHandle locked={locked} onDrag={(dx) => resizeColumns("tools", dx)} /></div>
 
         <div ref={gridRef} className="grid min-w-0 items-start gap-y-2" style={{ gridTemplateColumns: `minmax(0, ${columns.diameter}fr) 8px minmax(0, ${100 - columns.diameter}fr)` } as CSSProperties}>
+          <WearEventLog events={events} />
           {METRICS.map((metric) => {
             const values = controllerOffset(controller, metric.key === "diameter" ? "x" : "z");
 
@@ -118,18 +204,41 @@ export function ToolWearDashboard({ locked = false, wearDemo = null }: {
               <p className="mt-2 text-[10px] text-[#8296a8]">{`${metric.key === "diameter" ? "xWearMm" : "zWearMm"} · controller ${controllerStatus} · Offset = geometry + wear`}</p>
             </section></ResizableToolBlock>{metric.key === 'diameter' && <div className="flex self-stretch"><ColResizeHandle locked={locked} onDrag={(dx) => resizeColumns("diameter", dx)} /></div>}</div>;
           })}
-          {METRICS.map((metric) => <div key={metric.key} className="contents"><ResizableToolBlock id={`${metric.key}-trend`} width={520} height={330} locked={locked} fillWidth>
-            <Panel title={`${metric.label} history · ${toolLabel(selectedTool)}`} bodyClassName="flex flex-col">
-              {history.loading ? <p className="p-4 text-xs text-[#8296a8]">Loading wear history…</p> : null}
-              {history.error && <p role="alert" className="mb-2 text-xs text-amber-400">{history.error}{history.data ? " · Showing last successful data" : ""}</p>}
-              {history.data && <><div className="relative min-h-[100px] flex-1"><WearHistoryChart history={history.data} axis={metric.axis} label={metric.label} color={metric.color} /></div>
-                <p className="mt-2 shrink-0 text-[10px] text-[#70889c]">{history.data.totalPoints} records{history.data.downsampled ? ` · ${history.data.data.length} plotted (extrema preserved)` : ""} · controller compensation
-                  {history.data.end ? ` · Through ${new Date(history.data.end).toLocaleString()}` : ""}</p></>}
-            </Panel>
-          </ResizableToolBlock>{metric.key === 'diameter' && <div className="flex self-stretch"><ColResizeHandle locked={locked} onDrag={(dx) => resizeColumns("diameter", dx)} /></div>}</div>)}
-          <div className="col-span-3 min-w-0"><ResizableToolBlock id="photo" width={520} height={380} locked={locked} fillWidth>
-          <ToolImageBlock />
-          </ResizableToolBlock></div>
+          <div className="col-span-3 grid min-w-0 items-start gap-y-2 xl:grid-cols-[var(--wear-history-columns)]"
+            style={{ "--wear-history-columns": `minmax(0, ${columns.history}fr) 8px minmax(0, ${100 - columns.history}fr)` } as CSSProperties}>
+            <ResizableToolBlock id="wear-history" width={520} height={380} locked={locked} fillWidth>
+              <Panel title={`Wear history · ${toolLabel(selectedTool)}`} bodyClassName="flex flex-col gap-2" titleRight={
+                <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[#8296a8]">
+                  <input aria-label="Wear history start date (UTC)" type="date" value={dates.start}
+                    onChange={event => changeDate("start", event.target.value)}
+                    className="min-w-0 rounded border border-[#314254] bg-[#0c1722] px-1 py-1 text-[#c6d7e4]" />
+                  <span aria-hidden="true">–</span>
+                  <input aria-label="Wear history end date (UTC)" type="date" value={dates.end}
+                    onChange={event => changeDate("end", event.target.value)}
+                    className="min-w-0 rounded border border-[#314254] bg-[#0c1722] px-1 py-1 text-[#c6d7e4]" />
+                </div>
+              }>
+                {rangeError && <p role="alert" className="text-xs text-amber-400">{rangeError}</p>}
+                {history.loading && <p className="text-xs text-[#8296a8]">Loading wear history…</p>}
+                {history.error && <p role="alert" className="text-xs text-amber-400">{history.error}{history.data ? " · Showing last successful data" : ""}</p>}
+                {historyData && (
+                  <>
+                    <WearHistoryChart history={historyData} series={METRICS} />
+                    <p className="shrink-0 text-[10px] text-[#70889c]">
+                      {historyData.totalPoints} records{historyData.downsampled ? ` · ${historyData.data.length} plotted (extrema preserved)` : ""} · controller compensation
+                      {historyData.end ? ` · Through ${new Date(historyData.end).toLocaleString()}` : ""}
+                    </p>
+                  </>
+                )}
+              </Panel>
+            </ResizableToolBlock>
+            <div className="hidden self-stretch xl:flex">
+              <ColResizeHandle locked={locked} onDrag={dx => resizeColumns("history", dx)} />
+            </div>
+            <ResizableToolBlock id="photo" width={520} height={380} locked={locked} fillWidth>
+              <ToolImageBlock />
+            </ResizableToolBlock>
+          </div>
         </div>
       </div>
 

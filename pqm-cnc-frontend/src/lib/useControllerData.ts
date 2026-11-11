@@ -17,24 +17,29 @@ export function controllerOffset(row: ControllerRow | undefined, axis: "x" | "z"
   return { wear: valid(wear) ? wear : null, geometry: valid(geometry) ? geometry : null,
     offset: valid(wear) && valid(geometry) ? wear + geometry : null };
 }
-export function useControllerData(keepToolSnapshots = false) {
+export function useControllerData(keepToolSnapshots = false, onSamples?: (rows: ControllerRow[], receivedAt: string, machine: string) => void) {
   const [rows, setRows] = useState<ControllerRow[]>([]);
-  const [latestByTool, setLatestByTool] = useState<Record<string, ControllerRow>>({});
+  const [latestByTool, setLatestByTool] = useState<Record<string, ControllerRow & { receivedAt: string }>>({});
   const [status, setStatus] = useState("connecting");
   useEffect(() => {
     const base = process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000";
     const machine = process.env.NEXT_PUBLIC_SIGNALS_MACHINE_ID;
     const source = new EventSource(`${base.replace(/\/$/, "")}/api/signals/stream${machine ? `?machine_id=${encodeURIComponent(machine)}` : ""}`);
     source.addEventListener("signals", event => {
+      const receivedAt = new Date().toISOString();
       const batch = JSON.parse((event as MessageEvent).data);
       const records: ControllerRow[] = (batch.process ?? []).slice().sort((a: ControllerRow, b: ControllerRow) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
       setRows(records);
+      if (records.length) onSamples?.(records, receivedAt, batch.machine_id ?? machine ?? "");
       if (keepToolSnapshots && records.length) setLatestByTool(previous => {
         const next = { ...previous };
         for (const record of records) {
           const key = toolKey(record.tool_no);
-          if (!next[key] || Date.parse(record.timestamp) >= Date.parse(next[key].timestamp)) {
-            next[key] = record;
+          const current = next[key];
+          const timestamp = Date.parse(record.timestamp);
+          const currentTimestamp = current ? Date.parse(current.timestamp) : -Infinity;
+          if (timestamp >= currentTimestamp) {
+            next[key] = { ...record, receivedAt: timestamp === currentTimestamp ? current.receivedAt : receivedAt };
           }
         }
         return next;
@@ -43,6 +48,6 @@ export function useControllerData(keepToolSnapshots = false) {
     source.addEventListener("status", event => setStatus(JSON.parse((event as MessageEvent).data).state));
     source.onerror = () => setStatus("unavailable");
     return () => source.close();
-  }, [keepToolSnapshots]);
+  }, [keepToolSnapshots, onSamples]);
   return { rows, status, latestByTool };
 }

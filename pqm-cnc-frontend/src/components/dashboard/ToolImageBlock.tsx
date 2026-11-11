@@ -22,6 +22,7 @@ export function ToolImageBlock() {
     return () => window.removeEventListener("keydown", close);
   }, [expanded]);
   const failed = image?.imageUrl === failedUrl;
+  const receivedAt = image?.receivedAt ? new Date(image.receivedAt) : null;
   return <>
     <Panel title="Tool condition photo" titleRight={<span role="status" className="text-[10px] text-[#8296a8]">{statusLabels[status] ?? status}</span>}>
       <div className="flex min-h-[180px] flex-1 items-center justify-center overflow-hidden rounded-lg border border-dashed border-[#385064] bg-[#0a141e]">
@@ -32,6 +33,9 @@ export function ToolImageBlock() {
       </div>
       <div className="mt-2 shrink-0 text-[11px] text-[#8296a8]">
         {image ? <><p>{label} · Captured {new Date(image.timestampUtc).toLocaleString()}</p>
+          {!failed && receivedAt && Number.isFinite(receivedAt.getTime()) && (
+            <p className="mt-1 text-[10px]">Received <time dateTime={receivedAt.toISOString()}>{receivedAt.toLocaleString()}</time></p>
+          )}
           {image.inspectionResult && <p className="mt-1 text-[#bbcfde]">{image.inspectionResult}</p>}
           <p className="mt-1 text-[10px]">Latest received capture · independent of selected tool</p></> : <p>The next valid capture will appear here automatically.</p>}
       </div>

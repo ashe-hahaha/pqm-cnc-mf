@@ -139,10 +139,11 @@ class ImageStore:
 
 
 class ToolImageService:
-    def __init__(self, settings: Settings, consumer_factory=AIOKafkaConsumer):
+    def __init__(self, settings: Settings, consumer_factory=AIOKafkaConsumer, on_capture=None):
         self.settings = settings
         self.store = ImageStore(settings.microscope_image_dir, settings.microscope_max_image_bytes)
         self.consumer_factory = consumer_factory
+        self.on_capture = on_capture
         self.task = None
         self.listeners: set[asyncio.Queue] = set()
         self.status = {"state": "connecting" if settings.microscope_kafka_enabled else "disabled"}
@@ -175,6 +176,8 @@ class ToolImageService:
         else:
             if metadata is not None:
                 self.publish("image", metadata)
+                if self.on_capture is not None:
+                    self.on_capture(metadata)
                 logger.info("Microscope image received from Kafka capture=%s tool=%s topic=%s partition=%s offset=%s",
                             metadata["captureId"], metadata["toolNo"], record.topic, record.partition, record.offset)
         # Persisted images/rejections survive restarts before the offset is advanced.

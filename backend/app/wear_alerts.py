@@ -35,7 +35,7 @@ class WearAlerts:
         self.settings = settings
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
         self.tasks: list[asyncio.Task] = []
-        self.listeners: set[asyncio.Event] = set()
+        self.listeners: set[asyncio.Queue] = set()
         with closing(sqlite3.connect(self.path)) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS thresholds (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
@@ -111,6 +111,8 @@ class WearAlerts:
                     topic, key=event["alertId"].encode(), value=json.dumps(event).encode(),
                     headers=[("schemaVersion", b"1.0.0"), ("contentType", b"application/json")],
                 )
+            self.log_event("Notification sent", event["toolNo"], detail=f"Kafka · {topic}",
+                           event_id=f'{event["alertId"]}:kafka')
             logger.info("Tool wear alert published to Kafka alertId=%s topic=%s partition=%s offset=%s",
                         event["alertId"], topic, result.partition, result.offset)
         finally:
@@ -127,6 +129,8 @@ class WearAlerts:
             response = await client.post(self.settings.tool_wear_alert_temi_url, json=event, headers=headers)
             response.raise_for_status()
         logger.info("Temi API triggered alertId=%s status=%s", event["alertId"], response.status_code)
+        self.log_event("Notification sent", event["toolNo"], detail="Temi API",
+                       event_id=f'{event["alertId"]}:temi')
 
     async def deliver(self, destination):
         with closing(sqlite3.connect(self.path)) as db:
@@ -165,9 +169,22 @@ class WearAlerts:
     def start(self):
         self.tasks = [asyncio.create_task(self.deliver(name)) for name in self.destinations]
 
-    def notify_listeners(self):
+    def notify_listeners(self, event="updated", payload=None):
         for listener in self.listeners:
-            listener.set()
+            if listener.full():
+                listener.get_nowait()
+            listener.put_nowait((event, payload or {}))
+
+    def log_event(self, label, tool_no, *, timestamp=None, detail=None, event_id=None):
+        self.notify_listeners("wear_event", {
+            "id": event_id or str(uuid4()), "label": label, "toolNo": tool_no,
+            "timestampUtc": timestamp or datetime.now(timezone.utc).isoformat(),
+            "detail": detail,
+        })
+
+    def log_photo(self, image):
+        self.log_event("Photo received", image["toolNo"], timestamp=image["receivedAt"],
+                       detail=image["machineId"], event_id=f'{image["captureId"]}:photo')
 
     async def close(self):
         for task in self.tasks:
@@ -198,7 +215,20 @@ async def set_thresholds(request: Request, values: WearValues):
 @router.post("/prediction")
 async def mock_prediction(request: Request, values: MockPrediction):
     service = enabled_service(request)
+    service.log_event("Prediction started", values.toolNo, detail="Mock prediction")
+    await asyncio.sleep(3)
     result = await asyncio.to_thread(service.record, values)
+    prediction = result["prediction"]
+    service.log_event("Prediction completed", values.toolNo, timestamp=prediction["timestampUtc"],
+                      detail=f"Diameter {values.diameter} mm · Length {values.length} mm")
+    alert = result["alert"]
+    if alert:
+        detail = " · ".join(
+            f'{metric.capitalize()} {prediction[metric]} mm > {alert["thresholds"][metric]} mm'
+            for metric in alert["metrics"]
+        )
+        service.log_event("Alert triggered", values.toolNo, timestamp=alert["timestampUtc"],
+                          detail=detail, event_id=f'{alert["alertId"]}:alert')
     service.notify_listeners()
     return result
 
@@ -208,15 +238,14 @@ async def prediction_events(request: Request):
     service = request.app.state.wear_alerts
 
     async def events():
-        listener = asyncio.Event()
+        listener = asyncio.Queue(maxsize=128)
         service.listeners.add(listener)
         try:
             yield sse("updated", {})
             while not await request.is_disconnected():
                 try:
-                    await asyncio.wait_for(listener.wait(), timeout=15)
-                    listener.clear()
-                    yield sse("updated", {})
+                    event, payload = await asyncio.wait_for(listener.get(), timeout=15)
+                    yield sse(event, payload)
                 except TimeoutError:
                     yield ": heartbeat\n\n"
         finally:

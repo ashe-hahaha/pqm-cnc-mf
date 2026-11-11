@@ -12,11 +12,12 @@ export type WearHistory = {
   availableToolNos?: (string | number | null)[];
 };
 
-export function useWearHistory(minutes: number, start?: string, end?: string, tool?: string) {
+export function useWearHistory(minutes: number, start?: string, end?: string, tool?: string, enabled = true) {
   const key = `${minutes}:${start ?? ""}:${end ?? ""}:${tool ?? ""}`;
   const [discoveredTools, setDiscoveredTools] = useState<string[]>([]);
   const [state, setState] = useState<{ key: string; data: WearHistory | null; error: string | null }>({ key: "", data: null, error: null });
   useEffect(() => {
+    if (!enabled) return;
     const base = (process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
     const machine = process.env.NEXT_PUBLIC_SIGNALS_MACHINE_ID;
     const params = new URLSearchParams({ window_minutes: String(minutes), limit: "2000" });
@@ -50,6 +51,6 @@ export function useWearHistory(minutes: number, start?: string, end?: string, to
     void load();
     document.addEventListener("visibilitychange", visibility);
     return () => { active = false; clearTimeout(timer); controller.abort(); document.removeEventListener("visibilitychange", visibility); };
-  }, [key, minutes, start, end, tool]);
+  }, [key, minutes, start, end, tool, enabled]);
   return state.key === key ? { data: state.data, error: state.error, loading: state.data === null && state.error === null, discoveredTools } : { data: null, error: null, loading: true, discoveredTools };
 }
