@@ -20,6 +20,7 @@ export function JobContextHeader({
   canLoadNext = false,
   onLoadNextPiece,
   actions,
+  monitorTabs,
 }: {
   job: JobContext;
   selected: DrawingBalloon | null;
@@ -34,6 +35,8 @@ export function JobContextHeader({
   onLoadNextPiece?: () => void;
   /** Extra header controls rendered before the notifications icon. */
   actions?: ReactNode;
+  /** Monitoring view switch (Product Quality / Tool Wear), shown at the end of the machine info row. */
+  monitorTabs?: ReactNode;
 }) {
   const product =
     drawing?.jobId && drawing.jobId !== "_uploads"
@@ -152,6 +155,7 @@ export function JobContextHeader({
           value={`${job.inspectedParts} / ${job.batchTotal}`}
           pct={inspectPct}
         />
+        {monitorTabs ? <div className="ml-auto self-center">{monitorTabs}</div> : null}
       </div>
     </header>
   );

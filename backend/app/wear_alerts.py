@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,9 @@ router = APIRouter(prefix="/api/tool-wear/demo")
 METRICS = ("diameter", "length")
 RESET_RECORDS = 8  # predictions the demo is reset to (series entries #1 … #8)
 HISTORY_RETURNED = 10  # predictions included in the snapshot (sliding window)
+EVENTS_RETURNED = 100  # events included in the snapshot
+EVENTS_KEPT = 1000  # events retained in the database
+FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 
 
 class WearValues(BaseModel):
@@ -48,6 +52,7 @@ class WearAlerts:
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
         self.tasks: list[asyncio.Task] = []
         self.listeners: set[asyncio.Queue] = set()
+        self.last_failure_event: dict[tuple[str, str], float] = {}
         with closing(sqlite3.connect(self.path)) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS thresholds (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
@@ -59,6 +64,9 @@ class WearAlerts:
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS events (
+                    seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS outbox (
                     seq INTEGER PRIMARY KEY, destination TEXT NOT NULL, body TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0, due REAL NOT NULL DEFAULT 0
@@ -73,6 +81,8 @@ class WearAlerts:
                                  (TOOL_NO, HISTORY_RETURNED)).fetchall()
             cursor = db.execute("SELECT next_index FROM cursor WHERE id=1").fetchone()[0]
             alerts = db.execute("SELECT body FROM alerts ORDER BY seq DESC LIMIT 20").fetchall()
+            events = db.execute("SELECT body FROM events ORDER BY seq DESC LIMIT ?", (EVENTS_RETURNED,)).fetchall()
+            pending = db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
                 "history": [json.loads(row[0]) for row in reversed(history)],
@@ -80,7 +90,9 @@ class WearAlerts:
                            for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
                 "qualityBalloonId": QUALITY_BALLOON_ID,
                 "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
-                "alerts": [json.loads(row[0]) for row in alerts]}
+                "destinations": self.destinations, "pendingNotifications": pending,
+                "alerts": [json.loads(row[0]) for row in alerts],
+                "events": [json.loads(row[0]) for row in reversed(events)]}
 
     def set_thresholds(self, values: WearValues):
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -192,6 +204,22 @@ class WearAlerts:
         self.log_event("Notification sent", event["toolNo"], detail="Temi API",
                        event_id=f'{event["alertId"]}:temi')
 
+    def destination_label(self, destination):
+        if destination == "kafka":
+            return f"Kafka · {self.settings.tool_wear_alert_kafka_topic}"
+        return "Temi API"
+
+    def note_delivery_failure(self, destination, event, attempts, exc):
+        """Log a failed send; the page gets a (rate-limited) event so failures are visible there too."""
+        logger.warning("Tool wear alert delivery failed destination=%s alertId=%s error=%s",
+                       destination, event["alertId"], type(exc).__name__)
+        key, now = (event["alertId"], destination), time.monotonic()
+        last = self.last_failure_event.get(key)
+        if last is None or now - last >= FAILURE_EVENT_INTERVAL_S:
+            self.last_failure_event[key] = now
+            self.log_event("Notification failed", event["toolNo"],
+                           detail=f"{self.destination_label(destination)} · {type(exc).__name__} · attempt {attempts + 1}")
+
     async def deliver(self, destination):
         with closing(sqlite3.connect(self.path)) as db:
             while True:
@@ -210,12 +238,12 @@ class WearAlerts:
                     else:
                         await self.notify_temi(event)
                 except Exception as exc:
-                    logger.warning("Tool wear alert delivery failed destination=%s alertId=%s error=%s",
-                                   destination, event["alertId"], type(exc).__name__)
+                    self.note_delivery_failure(destination, event, attempts, exc)
                     with db:
                         db.execute("UPDATE outbox SET attempts=attempts+1, due=unixepoch()+? WHERE seq=?",
                                    (min(60, 2 ** min(attempts + 1, 6)), seq))
                 else:
+                    self.last_failure_event.pop((event["alertId"], destination), None)
                     with db:
                         db.execute("DELETE FROM outbox WHERE seq=?", (seq,))
 
@@ -227,6 +255,9 @@ class WearAlerts:
         ) if enabled]
 
     def start(self):
+        logger.info("Tool wear alert destinations: %s (kafka=%s topic=%s, temi=%s)",
+                    ",".join(self.destinations) or "none", self.settings.microscope_kafka_bootstrap_servers,
+                    self.settings.tool_wear_alert_kafka_topic, bool(self.settings.tool_wear_alert_temi_url))
         self.tasks = [asyncio.create_task(self.deliver(name)) for name in self.destinations]
 
     def notify_listeners(self, event="updated", payload=None):
@@ -241,7 +272,13 @@ class WearAlerts:
             "timestampUtc": timestamp or datetime.now(timezone.utc).isoformat(),
             "detail": detail,
         }
-        self.notify_listeners("wear_event", event)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            inserted = db.execute("INSERT OR IGNORE INTO events(id, body) VALUES (?, ?)",
+                                  (event["id"], json.dumps(event))).rowcount
+            if inserted:
+                db.execute("DELETE FROM events WHERE seq <= (SELECT MAX(seq) FROM events) - ?", (EVENTS_KEPT,))
+        if inserted:  # a repeated id (e.g. a redelivered photo) is already stored and broadcast
+            self.notify_listeners("wear_event", event)
 
     def log_photo(self, image):
         self.log_event("Photo received", image["toolNo"], timestamp=image["receivedAt"],
@@ -290,6 +327,9 @@ async def mock_prediction(request: Request, values: MockPrediction):
         )
         service.log_event("Alert triggered", TOOL_NO, timestamp=alert["timestampUtc"],
                           detail=detail, event_id=f'{alert["alertId"]}:alert')
+        for destination in service.destinations:
+            service.log_event("Notification queued", TOOL_NO, detail=service.destination_label(destination),
+                              event_id=f'{alert["alertId"]}:{destination}:queued')
     quality_alert = result["qualityAlert"]
     if quality_alert:
         comparison = ">" if quality_alert["side"] == "upper" else "<"

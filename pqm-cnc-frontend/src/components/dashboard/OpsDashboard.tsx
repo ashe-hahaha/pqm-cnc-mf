@@ -403,6 +403,14 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   );
   usePublishCopilotContext(copilotCtx);
 
+  const monitorTabs = (
+    <div className="flex gap-1 rounded-lg border border-[#2a3a4a] bg-[#0e1620] p-1" role="tablist" aria-label="Monitoring view">
+      {([['quality', 'Product Quality'], ['tool-wear', 'Tool Wear']] as const).map(([id, label]) => (
+        <button key={id} id={`tab-${id}`} role="tab" aria-selected={monitor === id} aria-controls={`monitor-${id}`} onClick={() => setMonitor(id)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${monitor === id ? 'bg-[#23425b] text-[#a5d8fa] shadow-sm' : 'text-[#8197aa] hover:bg-[#192a39] hover:text-[#c1d6e6]'}`}>{label}</button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="flex min-h-[100dvh] bg-[#0b111b] text-foreground">
       <OpsSidebar onMonitorChange={setMonitor} />
@@ -419,18 +427,11 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           onLayoutLockedChange={setLayoutLocked}
           canLoadNext={status.canLoadNext}
           onLoadNextPiece={loadNextPiece}
+          monitorTabs={monitorTabs}
           actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} qualitySpec={qualitySpec} /> : undefined}
         />
 
         <div className="flex-1 overflow-auto p-3">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-[#243141] pb-3">
-            <div className="flex gap-1 rounded-lg border border-[#2a3a4a] bg-[#0e1620] p-1" role="tablist" aria-label="Monitoring view">
-              {([['quality', 'Product Quality'], ['tool-wear', 'Tool Wear']] as const).map(([id, label]) => (
-                <button key={id} id={`tab-${id}`} role="tab" aria-selected={monitor === id} aria-controls={`monitor-${id}`} onClick={() => setMonitor(id)} className={`rounded-md px-4 py-2 text-xs font-semibold transition ${monitor === id ? 'bg-[#23425b] text-[#a5d8fa] shadow-sm' : 'text-[#8197aa] hover:bg-[#192a39] hover:text-[#c1d6e6]'}`}>{label}</button>
-              ))}
-            </div>
-            <p className="text-[10px] uppercase tracking-[0.12em] text-[#70889c]">{monitor === 'quality' ? 'Feature-level quality monitoring' : 'Tool-level condition monitoring'}</p>
-          </div>
           <div id="monitor-tool-wear" role="tabpanel" aria-labelledby="tab-tool-wear" hidden={monitor !== 'tool-wear'}>
             <ToolWearDashboard currentTool={data.job.currentTool} locked={dashLayout.locked} wearDemo={wearDemo} events={wearEvents} onEvents={appendWearEvents} />
           </div>

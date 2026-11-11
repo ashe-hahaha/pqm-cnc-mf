@@ -41,7 +41,26 @@ export type WearAlertSnapshot = {
   /** 1-based index the next automatic trigger will use. */
   nextIndex?: number;
   alerts: WearAlert[];
+  /** Notification targets the backend sends tool wear alerts to (e.g. "kafka", "temi"). */
+  destinations?: string[];
+  /** Notifications queued but not delivered yet (a growing number means sends are failing). */
+  pendingNotifications?: number;
+  /** Recent persisted events, oldest first. */
+  events?: WearEvent[];
 };
+
+/** Thresholds at or above this are the backend default ("not set"): no tool wear alert can fire. */
+export const THRESHOLD_NOT_SET = 999;
+const REFRESH_EVENT = "pqm:wear-refresh";
+/** Re-read the snapshot now instead of waiting for the next poll. */
+export function requestWearRefresh() {
+  window.dispatchEvent(new Event(REFRESH_EVENT));
+}
+const RESET_EVENT = "pqm:wear-reset";
+/** Tell this page the demo was reset, so locally held events are dropped even if the live stream is down. */
+function requestWearReset() {
+  window.dispatchEvent(new Event(RESET_EVENT));
+}
 
 const base = (process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const endpoint = `${base}/api/tool-wear/demo`;
@@ -61,6 +80,7 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void, onRese
         const data: WearAlertSnapshot = await response.json();
         if (!signal?.aborted) {
           setSnapshot(data);
+          if (data.events?.length) onEventRef.current?.(data.events);
         }
       }
     } catch {
@@ -83,12 +103,17 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void, onRese
     });
     const timer = window.setInterval(load, 5000);
     document.addEventListener("visibilitychange", load);
+    window.addEventListener(REFRESH_EVENT, load);
+    const handleReset = () => onResetRef.current?.();
+    window.addEventListener(RESET_EVENT, handleReset);
     load();
     return () => {
       request?.abort();
       stream.close();
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", load);
+      window.removeEventListener(REFRESH_EVENT, load);
+      window.removeEventListener(RESET_EVENT, handleReset);
     };
   }, [refresh]);
   return snapshot;
@@ -127,6 +152,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false, qualit
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       const result = await response.json();
       if (!settings) setSelected("auto");
+      requestWearRefresh();
       setMessage(settings ? "Thresholds saved." : result.alert || result.qualityAlert ? "Prediction recorded. Alert triggered." : "Prediction recorded.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Request failed.");
@@ -147,6 +173,8 @@ export function WearAlertForm({ snapshot, settings = false, bare = false, qualit
       const response = await fetch(`${endpoint}/reset`, { method: "POST" });
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       setSelected("auto");
+      requestWearReset();
+      requestWearRefresh();
       setMessage("Reset to the first 8 predictions.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Request failed.");
@@ -194,6 +222,17 @@ export function WearAlertForm({ snapshot, settings = false, bare = false, qualit
           </button>
         )}
       </form>
+      {!settings && snapshot && snapshot.enabled && fields.every(field => snapshot.thresholds[field] >= THRESHOLD_NOT_SET) && (
+        <p className="mt-2 text-xs text-amber-400">
+          Tool wear thresholds are not set — no tool wear alert will fire. Set them with ⚙ on the Tool Wear page.
+        </p>
+      )}
+      {!settings && snapshot?.destinations && (
+        <p className="mt-2 text-xs text-[#8296a8]">
+          Notifications: {snapshot.destinations.length ? snapshot.destinations.map(name => name === "kafka" ? "Kafka" : name === "temi" ? "Temi" : name).join(", ") : "none enabled"}
+          {snapshot.pendingNotifications ? ` · ${snapshot.pendingNotifications} pending` : ""}
+        </p>
+      )}
       {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>
     </>

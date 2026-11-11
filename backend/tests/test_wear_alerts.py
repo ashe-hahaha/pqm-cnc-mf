@@ -98,7 +98,7 @@ def test_kafka_publisher_sends_consumer_contract(tmp_path, monkeypatch):
     })]
 
 
-def test_prediction_events_are_sent_in_order_without_persisting(tmp_path):
+def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
     async def run():
         _, service = make_service(tmp_path)
         service.set_thresholds(WearValues(diameter=0.1, length=999))
@@ -113,9 +113,11 @@ def test_prediction_events_are_sent_in_order_without_persisting(tmp_path):
         await task
         assert listener.get_nowait()[1]["label"] == "Prediction completed"
         assert listener.get_nowait()[1]["label"] == "Alert triggered"
-        assert "events" not in service.snapshot()
-        with closing(sqlite3.connect(service.path)) as db:
-            assert db.execute("SELECT name FROM sqlite_master WHERE name='events'").fetchone() is None
+        # Persisted in the same order; one "queued" event per enabled destination (Kafka here).
+        assert [event["label"] for event in service.snapshot()["events"]] == [
+            "Prediction started", "Prediction completed", "Alert triggered",
+            "Notification queued", "Quality alert triggered",
+        ]
 
     asyncio.run(run())
 
@@ -167,3 +169,34 @@ def test_reset_restores_the_first_eight_predictions(tmp_path):
     with closing(sqlite3.connect(service.path)) as db:
         assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
     assert service.record(MockPrediction())["prediction"]["index"] == 9
+
+
+def test_events_persist_across_restart_and_dedupe(tmp_path):
+    settings, service = make_service(tmp_path)
+    service.log_event("Prediction started", "25", detail="Mock prediction", event_id="a")
+    service.log_event("Prediction completed", "25", event_id="b")
+    service.log_event("Prediction started", "25", event_id="a")  # duplicate id is ignored
+
+    events = WearAlerts(settings).snapshot()["events"]
+    assert [event["id"] for event in events] == ["a", "b"]
+    assert events[0]["label"] == "Prediction started"
+
+
+def test_snapshot_reports_destinations_and_pending_notifications(tmp_path):
+    _, service = make_service(tmp_path)
+    assert service.snapshot()["destinations"] == ["kafka"]
+    assert service.snapshot()["pendingNotifications"] == 0
+    service.set_thresholds(WearValues(diameter=0.1, length=999))
+    service.record(MockPrediction(index=10))
+    assert service.snapshot()["pendingNotifications"] == 1
+
+
+def test_delivery_failures_are_logged_as_events_but_rate_limited(tmp_path):
+    _, service = make_service(tmp_path)
+    event = {"alertId": "alert-1", "toolNo": "25"}
+    service.note_delivery_failure("kafka", event, 0, TimeoutError())
+    service.note_delivery_failure("kafka", event, 1, TimeoutError())  # within the interval: no second event
+    service.note_delivery_failure("temi", event, 0, ValueError())  # another destination: its own event
+
+    details = [e["detail"] for e in service.snapshot()["events"] if e["label"] == "Notification failed"]
+    assert details == ["Kafka · makino_tool_wear_alert · TimeoutError · attempt 1", "Temi API · ValueError · attempt 1"]
