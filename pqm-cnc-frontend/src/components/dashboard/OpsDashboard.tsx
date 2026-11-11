@@ -99,7 +99,9 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
       seenWearEvents.current.add(event.id);
       return true;
     });
-    if (fresh.length) setWearEvents(previous => [...previous, ...fresh]);
+    if (fresh.length) {
+      setWearEvents(previous => [...previous, ...fresh].sort((a, b) => Date.parse(a.timestampUtc) - Date.parse(b.timestampUtc)));
+    }
   }, []);
   const wearDemo = useWearAlertDemo(appendWearEvents);
   const [monitor, setMonitor] = useState<"quality" | "tool-wear">("quality");

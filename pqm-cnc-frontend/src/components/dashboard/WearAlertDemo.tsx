@@ -18,6 +18,8 @@ export type WearAlertSnapshot = {
   thresholds: Values;
   prediction: Prediction | null;
   alerts: WearAlert[];
+  /** Recent persisted events, oldest first. */
+  events?: WearEvent[];
 };
 
 const base = (process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
@@ -28,12 +30,17 @@ const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5
 
 export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void) {
   const [snapshot, setSnapshot] = useState<WearAlertSnapshot | null>(null);
+  const onEventRef = useRef(onEvent);
+  useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
       const response = await fetch(endpoint, { cache: "no-store", signal });
       if (response.ok) {
         const data: WearAlertSnapshot = await response.json();
-        if (!signal?.aborted) setSnapshot(data);
+        if (!signal?.aborted) {
+          setSnapshot(data);
+          if (data.events?.length) onEventRef.current?.(data.events);
+        }
       }
     } catch {
       // Keep the last successful snapshot while the backend is unavailable.

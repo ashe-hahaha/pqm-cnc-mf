@@ -19,6 +19,8 @@ from app.signals import sse
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/tool-wear/demo")
 METRICS = ("diameter", "length")
+EVENTS_RETURNED = 100  # events included in the snapshot
+EVENTS_KEPT = 1000  # events retained in the database
 
 
 class WearValues(BaseModel):
@@ -45,6 +47,9 @@ class WearAlerts:
                 );
                 CREATE INDEX IF NOT EXISTS predictions_tool ON predictions(machine, tool, seq);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS events (
+                    seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS outbox (
                     seq INTEGER PRIMARY KEY, destination TEXT NOT NULL, body TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0, due REAL NOT NULL DEFAULT 0
@@ -56,9 +61,11 @@ class WearAlerts:
             thresholds = db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0]
             prediction = db.execute("SELECT body FROM predictions ORDER BY seq DESC LIMIT 1").fetchone()
             alerts = db.execute("SELECT body FROM alerts ORDER BY seq DESC LIMIT 20").fetchall()
+            events = db.execute("SELECT body FROM events ORDER BY seq DESC LIMIT ?", (EVENTS_RETURNED,)).fetchall()
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
-                "alerts": [json.loads(row[0]) for row in alerts]}
+                "alerts": [json.loads(row[0]) for row in alerts],
+                "events": [json.loads(row[0]) for row in reversed(events)]}
 
     def set_thresholds(self, values: WearValues):
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -176,11 +183,18 @@ class WearAlerts:
             listener.put_nowait((event, payload or {}))
 
     def log_event(self, label, tool_no, *, timestamp=None, detail=None, event_id=None):
-        self.notify_listeners("wear_event", {
+        event = {
             "id": event_id or str(uuid4()), "label": label, "toolNo": tool_no,
             "timestampUtc": timestamp or datetime.now(timezone.utc).isoformat(),
             "detail": detail,
-        })
+        }
+        with closing(sqlite3.connect(self.path)) as db, db:
+            inserted = db.execute("INSERT OR IGNORE INTO events(id, body) VALUES (?, ?)",
+                                  (event["id"], json.dumps(event))).rowcount
+            if inserted:
+                db.execute("DELETE FROM events WHERE seq <= (SELECT MAX(seq) FROM events) - ?", (EVENTS_KEPT,))
+        if inserted:  # a repeated id (e.g. redelivered photo) is already stored and broadcast
+            self.notify_listeners("wear_event", event)
 
     def log_photo(self, image):
         self.log_event("Photo received", image["toolNo"], timestamp=image["receivedAt"],

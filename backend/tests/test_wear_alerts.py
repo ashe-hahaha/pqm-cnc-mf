@@ -61,3 +61,15 @@ def test_kafka_publisher_sends_consumer_contract(tmp_path, monkeypatch):
     assert sent == [(settings.tool_wear_alert_kafka_topic, b"test", event, {
         "schemaVersion": b"1.0.0", "contentType": b"application/json",
     })]
+
+
+def test_events_persist_across_restart_and_dedupe(tmp_path):
+    settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path))
+    service = WearAlerts(settings)
+    service.log_event("Prediction started", "167", detail="Mock prediction", event_id="a")
+    service.log_event("Prediction completed", "167", event_id="b")
+    service.log_event("Prediction started", "167", event_id="a")  # duplicate id is ignored
+
+    events = WearAlerts(settings).snapshot()["events"]
+    assert [event["id"] for event in events] == ["a", "b"]
+    assert events[0]["label"] == "Prediction started"

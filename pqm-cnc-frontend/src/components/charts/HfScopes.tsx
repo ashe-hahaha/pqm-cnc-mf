@@ -55,7 +55,7 @@ export function HfScopes({
         {visibleChannels.map(([label, samples]) => (
           <div key={label}>
             <p className="mb-0.5 text-[10px] text-[#8fa3b5]">{label}</p>
-            <SensorScope samples={[...samples]} label={label} />
+            <SensorScope samples={[...samples]} label={label} autoScale={label.startsWith("Vibration")} />
           </div>
         ))}
       </div>
