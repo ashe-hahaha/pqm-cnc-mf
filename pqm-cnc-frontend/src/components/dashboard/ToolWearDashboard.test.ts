@@ -85,7 +85,7 @@ it("shows history errors while retaining the last successful charts", async () =
   historyState.error = "History request failed (502)";
   await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
   expect(host.textContent).toContain("Showing last successful data");
-  expect(host.querySelector('svg[aria-label="Tool wear history"]')).not.toBeNull();
+  expect(host.querySelector('svg[aria-label^="Predicted wear history"]')).not.toBeNull();
   historyState.error = null;
 });
 
@@ -93,13 +93,13 @@ it("switches to another tool without showing the previous controller reading", a
   const card = host.querySelector<HTMLButtonElement>('button[aria-label="T167"]')!;
   await act(async () => card.click());
   expect(card.getAttribute("aria-pressed")).toBe("true");
-  expect(host.textContent).toContain("Wear history · T167");
+  expect(host.textContent).toContain("Predicted wear history · T167");
   expect(host.querySelector('[aria-label="Diameter wear health"]')?.textContent).not.toContain("0.340");
 });
 
 it("toggles one wear series without hiding the other", async () => {
-  const chart = host.querySelector('svg[aria-label="Tool wear history"]')!;
-  const legend = host.querySelector('[aria-label="Wear chart legend"]')!;
+  const chart = host.querySelector('svg[aria-label^="Predicted wear history"]')!;
+  const legend = host.querySelector('[aria-label="Toggle wear series"]')!;
   const diameter = legend.querySelector<HTMLButtonElement>("button")!;
   await act(async () => diameter.click());
   expect(diameter.getAttribute("aria-pressed")).toBe("false");
@@ -107,4 +107,11 @@ it("toggles one wear series without hiding the other", async () => {
   expect(chart.querySelector('g[aria-label="Tool length wear"]')).not.toBeNull();
   await act(async () => diameter.click());
   expect(chart.querySelector('g[aria-label="Diameter wear"]')).not.toBeNull();
+});
+
+it("shows the controller's measured values as markers on the predicted wear history", () => {
+  const chart = host.querySelector('svg[aria-label^="Predicted wear history"]')!;
+  expect(chart.getAttribute("aria-label")).toContain("2 measured");
+  // Two history records, each with a diameter (X) and a length (Z) value.
+  expect([...chart.querySelectorAll("title")].filter(title => title.textContent?.startsWith("Measured "))).toHaveLength(4);
 });

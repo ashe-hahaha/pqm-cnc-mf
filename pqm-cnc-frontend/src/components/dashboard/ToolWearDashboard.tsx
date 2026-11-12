@@ -7,7 +7,7 @@ import { ToolImageBlock } from "./ToolImageBlock";
 import { ResizableToolBlock } from "./ResizableToolBlock";
 import { ColResizeHandle } from "./ResizableBox";
 import { useWearHistory } from "@/lib/useWearHistory";
-import { WearHistoryChart } from "./WearHistoryChart";
+import { WearPredictionChart, type MeasuredWear } from "./WearPredictionChart";
 import { toolKey, toolLabel } from "@/lib/toolNumber";
 import { WearEventLog, type WearEvent } from "./WearEventLog";
 import { WearAlertForm, type WearAlertSnapshot } from "./WearAlertDemo";
@@ -66,6 +66,17 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
   const [columns, setColumns] = useState({ tools: 240, diameter: 50, history: 50 });
   const gridRef = useRef<HTMLDivElement>(null);
   const controller = latestByTool[selectedTool];
+  // Predictions for the selected tool inside the chosen date range (the demo only predicts one tool).
+  const rangeStart = bounds ? Date.parse(bounds.start) : -Infinity;
+  const rangeEnd = bounds ? Date.parse(bounds.end) : Infinity;
+  const predictions = (wearDemo?.history ?? []).filter(point => {
+    const t = Date.parse(point.timestampUtc);
+    return toolKey(point.toolNo) === selectedTool && t >= rangeStart && t < rangeEnd;
+  });
+  // Measured values come from the controller's real wear history (X wear = diameter, Z wear = length).
+  const measured: MeasuredWear[] = (history.data?.data ?? []).flatMap(point =>
+    point.xWearMm === null && point.zWearMm === null ? []
+      : [{ t: point.timestampEpoch, diameter: point.xWearMm, length: point.zWearMm }]);
   const historyData = history.data;
   const tools = [...new Set([DEFAULT_TOOL, ...Object.keys(latestByTool), ...history.discoveredTools])];
   useEffect(() => {
@@ -207,7 +218,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
           <div className="col-span-3 grid min-w-0 items-start gap-y-2 xl:grid-cols-[var(--wear-history-columns)]"
             style={{ "--wear-history-columns": `minmax(0, ${columns.history}fr) 8px minmax(0, ${100 - columns.history}fr)` } as CSSProperties}>
             <ResizableToolBlock id="wear-history" width={520} height={380} locked={locked} fillWidth>
-              <Panel title={`Wear history · ${toolLabel(selectedTool)}`} bodyClassName="flex flex-col gap-2" titleRight={
+              <Panel title={`Predicted wear history · ${toolLabel(selectedTool)}`} bodyClassName="flex flex-col gap-2" titleRight={
                 <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[#8296a8]">
                   <input aria-label="Wear history start date (UTC)" type="date" value={dates.start}
                     onChange={event => changeDate("start", event.target.value)}
@@ -219,17 +230,14 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
                 </div>
               }>
                 {rangeError && <p role="alert" className="text-xs text-amber-400">{rangeError}</p>}
-                {history.loading && <p className="text-xs text-[#8296a8]">Loading wear history…</p>}
-                {history.error && <p role="alert" className="text-xs text-amber-400">{history.error}{history.data ? " · Showing last successful data" : ""}</p>}
-                {historyData && (
-                  <>
-                    <WearHistoryChart history={historyData} series={METRICS} />
-                    <p className="shrink-0 text-[10px] text-[#70889c]">
-                      {historyData.totalPoints} records{historyData.downsampled ? ` · ${historyData.data.length} plotted (extrema preserved)` : ""} · controller compensation
-                      {historyData.end ? ` · Through ${new Date(historyData.end).toLocaleString()}` : ""}
-                    </p>
-                  </>
-                )}
+                {history.loading && <p className="text-xs text-[#8296a8]">Loading measured history…</p>}
+                {history.error && <p role="alert" className="text-xs text-amber-400">Measured history: {history.error}{history.data ? " · Showing last successful data" : ""}</p>}
+                <WearPredictionChart points={predictions} thresholds={wearDemo?.thresholds} measured={measured} xMode="time"
+                  emptyMessage="No prediction or measured value in this range." />
+                <p className="shrink-0 text-[10px] text-[#70889c]">
+                  {predictions.length} predicted · {measured.length} measured{historyData?.downsampled ? " (downsampled, extrema preserved)" : ""} · measured values from controller compensation
+                  {historyData?.end ? ` · Through ${new Date(historyData.end).toLocaleString()}` : ""}
+                </p>
               </Panel>
             </ResizableToolBlock>
             <div className="hidden self-stretch xl:flex">

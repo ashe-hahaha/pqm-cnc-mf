@@ -7,7 +7,7 @@ import type { WearEvent } from "./WearEventLog";
 type Values = { diameter: number; length: number };
 export type WearPrediction = Values & { machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
 type Prediction = WearPrediction;
-type ToolWearAlert = {
+export type ToolWearAlert = {
   kind?: "tool_wear";
   alertId: string;
   timestampUtc: string;
