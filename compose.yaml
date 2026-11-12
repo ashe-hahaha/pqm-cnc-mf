@@ -48,6 +48,9 @@ configs:
     content: |
       api:
         listen: ":1984"
+        # The browser's Origin (the page address) differs from go2rtc's own host because the frontend proxies
+        # the WebSocket, so go2rtc's same-origin check would reject it. go2rtc is not published; only /cctv/ws is reachable.
+        origin: "*"
       rtsp:
         listen: ""
       webrtc:

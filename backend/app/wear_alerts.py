@@ -85,7 +85,6 @@ class WearAlerts:
                 CREATE TABLE IF NOT EXISTS quality_spec (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
-                INSERT OR IGNORE INTO quality_spec VALUES (1, '{"nominal":0.0,"upperTol":0.02,"lowerTol":0.0}');
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
@@ -95,6 +94,9 @@ class WearAlerts:
                     attempts INTEGER NOT NULL DEFAULT 0, due REAL NOT NULL DEFAULT 0
                 );
             """)
+            default = QualitySpec(nominal=DEFAULT_QUALITY_SPEC[0], upperTol=DEFAULT_QUALITY_SPEC[1],
+                                  lowerTol=DEFAULT_QUALITY_SPEC[2])
+            db.execute("INSERT OR IGNORE INTO quality_spec VALUES (1, ?)", (default.model_dump_json(),))
 
     def snapshot(self):
         with closing(sqlite3.connect(self.path)) as db:

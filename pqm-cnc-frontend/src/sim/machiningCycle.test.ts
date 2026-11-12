@@ -59,15 +59,15 @@ const balloons: DrawingBalloon[] = [
 ];
 
 describe("planOutcomes", () => {
-  it("assigns exactly one high_risk and one warning", () => {
-    const out = planOutcomes(
-      balloons.map((b) => b.id),
-      7,
-    );
-    const values = Object.values(out);
-    expect(values.filter((v) => v === "high_risk")).toHaveLength(1);
-    expect(values.filter((v) => v === "warning")).toHaveLength(1);
-    expect(values.filter((v) => v === "pass")).toHaveLength(1);
+  it("passes every balloon on every piece", () => {
+    for (const piece of [1, 7, 24]) {
+      const out = planOutcomes(
+        balloons.map((b) => b.id),
+        piece,
+      );
+      expect(Object.keys(out)).toHaveLength(balloons.length);
+      expect(Object.values(out).every((v) => v === "pass")).toBe(true);
+    }
   });
 });
 

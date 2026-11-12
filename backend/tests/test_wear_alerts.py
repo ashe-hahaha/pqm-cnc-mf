@@ -125,24 +125,24 @@ def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
 
 def test_quality_alert_follows_the_stored_tolerance(tmp_path):
     settings, service = make_service(tmp_path)
-    assert service.snapshot()["qualitySpec"] == {"nominal": 0, "upperTol": 0.02, "lowerTol": 0}
-    # Default spec 0 … 0.02 mm: #9 (0.0088) is fine, #10 (0.027) is above USL.
+    assert service.snapshot()["qualitySpec"] == {"nominal": 18, "upperTol": 0.1, "lowerTol": 0.1}
+    # Default spec 18 ± 0.1 mm: #9 (18.0088) is fine, #10 (18.15) is above USL 18.1.
     assert service.record(MockPrediction(index=9))["qualityAlert"] is None
     alert = service.record(MockPrediction(index=10))["qualityAlert"]
-    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b1", "upper", 0.027, 0.02)
+    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b1", "upper", 18.15, 18.1)
 
     # A wider tolerance makes the same value acceptable again.
-    service.set_quality_spec(QualitySpec(nominal=0, upperTol=0.05, lowerTol=0))
+    service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.2, lowerTol=0.1))
     assert service.record(MockPrediction(index=10))["qualityAlert"] is None
     # A tighter one alerts on a value that used to be fine, and survives a restart.
-    service.set_quality_spec(QualitySpec(nominal=0, upperTol=0.005, lowerTol=0))
+    service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.005, lowerTol=0))
     restarted = WearAlerts(settings)
     assert restarted.snapshot()["qualitySpec"]["upperTol"] == 0.005
-    assert restarted.record(MockPrediction(index=9))["qualityAlert"]["limit"] == 0.005
+    assert restarted.record(MockPrediction(index=9))["qualityAlert"]["limit"] == 18.005
     # Below the lower limit alerts too.
-    restarted.set_quality_spec(QualitySpec(nominal=0.02, upperTol=0.02, lowerTol=0.01))
+    restarted.set_quality_spec(QualitySpec(nominal=18.02, upperTol=0.02, lowerTol=0.01))
     lower = restarted.record(MockPrediction(index=1))["qualityAlert"]
-    assert (lower["side"], lower["limit"]) == ("lower", 0.01)
+    assert (lower["side"], lower["limit"]) == ("lower", 18.01)
 
 
 def batch(*rows):

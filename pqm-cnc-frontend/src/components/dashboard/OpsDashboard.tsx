@@ -304,11 +304,17 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     });
   }, [wearDemo?.qualityBalloonId]);
   const backendQualitySpec = wearDemo?.qualitySpec;
-  const allBalloons = useMemo(
-    () => applyTolerances(data.balloons, backendQualitySpec
-      ? { ...tolerances, [wearDemo?.qualityBalloonId ?? "b1"]: backendQualitySpec } : tolerances),
-    [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId],
-  );
+  const latestQuality = wearDemo?.history?.findLast((point) => typeof point.quality === "number")?.quality;
+  const allBalloons = useMemo(() => {
+    const qualityId = wearDemo?.qualityBalloonId ?? "b1";
+    const toleranced = applyTolerances(data.balloons, backendQualitySpec
+      ? { ...tolerances, [qualityId]: backendQualitySpec } : tolerances);
+    // Every other balloon passes in the simulation; the quality balloon's colour follows its latest prediction.
+    return typeof latestQuality === "number"
+      ? toleranced.map((b) => b.id === qualityId && b.risk !== "not_machined"
+        ? { ...b, risk: qualityRisk(latestQuality, b) } : b)
+      : toleranced;
+  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, latestQuality]);
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),
@@ -660,7 +666,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <Source label="G-code" />
             <Source label="CMM (sampling)" />
             <span className="normal-case tracking-normal text-[#8fa3b5]">
-              {monitor === 'quality' ? 'Sim · 8s/balloon · Next/N loads piece · 1 risk + 1 warn / piece' : 'Tool wear demo · diameter and tool length predictions are simulated'}
+              {monitor === 'quality' ? 'Sim · 8s/balloon · Next/N loads piece · B1 follows its prediction' : 'Tool wear demo · diameter and tool length predictions are simulated'}
             </span>
           </div>
           <p>All times are synchronized to machine time</p>

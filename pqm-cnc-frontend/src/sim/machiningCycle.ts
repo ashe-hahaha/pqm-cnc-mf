@@ -28,7 +28,7 @@ export interface MachiningSimState {
   order: string[];
   /** Next balloon index to finish (0 … order.length). */
   nextIndex: number;
-  /** Planned outcomes — exactly 1 high_risk and 1 warning per piece. */
+  /** Planned outcomes — every balloon passes. */
   outcomes: Record<string, FinishedOutcome>;
   risks: Record<string, BalloonRisk>;
   predictions: Record<string, BalloonPrediction>;
@@ -92,24 +92,16 @@ export function createMachiningSim(
   };
 }
 
-/** Deterministic: exactly one high_risk and one warning per piece. */
+/**
+ * Every simulated balloon passes. The quality balloon (B1) is the exception only in that its colour is taken
+ * from its backend prediction (see OpsDashboard), so the simulation no longer plants risks on other balloons.
+ */
 export function planOutcomes(
   order: string[],
-  pieceIndex: number,
+  // Kept so callers need not change; outcomes no longer depend on the piece number.
+  _pieceIndex: number,
 ): Record<string, FinishedOutcome> {
-  const out: Record<string, FinishedOutcome> = {};
-  if (order.length === 0) return out;
-  for (const id of order) out[id] = "pass";
-  if (order.length === 1) {
-    out[order[0]!] = "high_risk";
-    return out;
-  }
-  const hi = pieceIndex % order.length;
-  let warn = (pieceIndex * 5 + 2) % order.length;
-  if (warn === hi) warn = (warn + 1) % order.length;
-  out[order[hi]!] = "high_risk";
-  out[order[warn]!] = "warning";
-  return out;
+  return Object.fromEntries(order.map((id) => [id, "pass" as FinishedOutcome]));
 }
 
 /**

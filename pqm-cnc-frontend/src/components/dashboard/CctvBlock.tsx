@@ -38,7 +38,8 @@ export function CctvBlock({ title = "Machine CCTV · V61", streamUrl = process.e
           if (!active) { URL.revokeObjectURL(url); return; }
           if (current) URL.revokeObjectURL(current);
           current = url;
-          setFrame({ url, capturedAt: response.headers.get("X-Captured-At") ?? new Date().toISOString() });
+          // Browser time on purpose: the server clock may differ, which would make a fresh picture look stale.
+          setFrame({ url, capturedAt: new Date().toISOString() });
           setFailed(false);
         } catch {
           if (active) setFailed(true);
