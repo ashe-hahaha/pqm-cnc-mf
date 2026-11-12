@@ -23,6 +23,10 @@ jobs:
           docker build -f pqm-cnc-frontend/Dockerfile -t "$DOCKERHUB_USERNAME/pqm-cnc-frontend:$IMAGE_TAG" .
           docker build -t "$DOCKERHUB_USERNAME/pqm-cnc-backend:$IMAGE_TAG" backend
 
+      - name: Pull third-party images
+        # The smoke test runs with --pull never, so images that are not built here must be pulled first.
+        run: docker compose pull go2rtc
+
       - name: Smoke test
         run: |
           docker compose up -d --pull never --wait --wait-timeout 90
