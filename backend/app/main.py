@@ -33,11 +33,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             timeout=settings.upstream_timeout_seconds,
         ) as client:
             app.state.source = build_source(settings, client)
-            app.state.signals = SignalHub(settings)
             app.state.tool_wear = ToolWearStore(settings)
             app.state.tool_wear_lock = Lock()
             app.state.wear_history = WearHistoryService(settings)
             app.state.wear_alerts = WearAlerts(settings)
+            app.state.signals = SignalHub(settings, on_batch=app.state.wear_alerts.on_signals)
             app.state.tool_images = ToolImageService(settings, on_capture=app.state.wear_alerts.log_photo)
             app.state.tool_images.start()
             app.state.wear_alerts.start()

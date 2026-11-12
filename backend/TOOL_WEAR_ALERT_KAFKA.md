@@ -56,3 +56,13 @@ sudo docker compose logs -f backend
 Thresholds, prediction state, alert history and pending deliveries are stored in a separate SQLite database inside the existing microscope volume.
 
 To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_ALERT_TEMI_URL`. The current adapter sends an HTTP POST with an empty body and `Idempotency-Key: <alertId>`. Set `TOOL_WEAR_ALERT_TEMI_TOKEN` if the endpoint expects a Bearer token. Confirm the request contract with the Temi endpoint owner before enabling it.
+
+## NC line 自动触发
+
+页面打开（有 `/api/signals/stream` 连接）期间，后端检查 controller `process` 行的 `nc_line` 字段，值从别的值（含 null）变为触发值时自动执行一次与手动 Trigger 相同的预测流程（事件详情显示 `NC line x → 25`）。
+
+- 触发值默认 `25`，可用 `TOOL_WEAR_NC_TRIGGER_VALUE` 修改；字段名固定为 `nc_line`（`app/wear_alerts.py` 的 `NC_LINE_FIELD`），无需其它配置，自动生效。
+- 页面刚打开后的第一批数据只记录当前值，不触发；自动触发之间至少间隔 10 秒；预测进行中不重复触发。
+- 只按 `timestamp` 比上次更新的行判断，重叠窗口和数据库停写时重复返回的旧行不会重复触发。
+- B1 公差保存在后端 `wear-alerts.sqlite3` 的 `quality_spec` 表（默认 0 / +0.02 / -0.00），手动和自动触发都用它判断 quality 告警。
+- 状态（是否在监测、最近的 `nc_line`、最近一次自动触发时间）在 `GET /api/tool-wear/demo` 的 `ncWatch` 字段和页面触发面板中显示。

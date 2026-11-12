@@ -28,6 +28,8 @@ type QualityAlert = {
 };
 export type WearAlert = ToolWearAlert | QualityAlert;
 export type QualitySpec = { nominal: number; upperTol: number; lowerTol: number };
+/** Controller NC line watch: the backend starts a prediction when the value changes to `triggerValue`. */
+export type NcWatch = { field: string; triggerValue: string; running: boolean; value: string | null; lastTriggerAt: string | null };
 export type WearAlertSnapshot = {
   enabled: boolean;
   thresholds: Values;
@@ -38,6 +40,9 @@ export type WearAlertSnapshot = {
   series?: { index: number; diameter: number; length: number; quality?: number }[];
   /** Balloon the quality value of each prediction belongs to. */
   qualityBalloonId?: string;
+  /** Tolerance of the quality balloon, stored by the backend (used by every trigger). */
+  qualitySpec?: QualitySpec;
+  ncWatch?: NcWatch;
   /** 1-based index the next automatic trigger will use. */
   nextIndex?: number;
   alerts: WearAlert[];
@@ -67,6 +72,19 @@ const endpoint = `${base}/api/tool-wear/demo`;
 const fields = ["diameter", "length"] as const;
 const fieldStyle = "w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]";
 const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5d8fa] disabled:opacity-50";
+
+/** Store the quality balloon's tolerance on the backend; returns false when it could not be saved. */
+export async function saveQualitySpec(spec: QualitySpec): Promise<boolean> {
+  try {
+    const response = await fetch(`${endpoint}/quality-spec`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(spec),
+    });
+    requestWearRefresh();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void, onReset?: () => void) {
   const [snapshot, setSnapshot] = useState<WearAlertSnapshot | null>(null);
@@ -119,10 +137,8 @@ export function useWearAlertDemo(onEvent?: (events: WearEvent[]) => void, onRese
   return snapshot;
 }
 
-export function WearAlertForm({ snapshot, settings = false, bare = false, qualitySpec }: {
+export function WearAlertForm({ snapshot, settings = false, bare = false }: {
   snapshot: WearAlertSnapshot | null; settings?: boolean; bare?: boolean;
-  /** Current tolerance of the quality balloon; the backend alerts when the predicted value leaves it. */
-  qualitySpec?: QualitySpec;
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -140,7 +156,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false, qualit
     const form = new FormData(event.currentTarget);
     const body = settings
       ? { diameter: Number(form.get("diameter")), length: Number(form.get("length")) }
-      : { ...(selected === "auto" ? {} : { index: Number(selected) }), ...(qualitySpec ? { qualitySpec } : {}) };
+      : (selected === "auto" ? {} : { index: Number(selected) });
     setBusy(true);
     setMessage("");
     try {
@@ -233,6 +249,13 @@ export function WearAlertForm({ snapshot, settings = false, bare = false, qualit
           {snapshot.pendingNotifications ? ` · ${snapshot.pendingNotifications} pending` : ""}
         </p>
       )}
+      {!settings && snapshot?.ncWatch && (
+        <p className="mt-2 text-xs text-[#8296a8]" data-testid="nc-watch">
+          NC line watch: {snapshot.ncWatch.running ? "running" : "waiting for the signal stream"}
+          {` · ${snapshot.ncWatch.field} = ${snapshot.ncWatch.value ?? "–"} · auto-trigger when it becomes ${snapshot.ncWatch.triggerValue}`}
+          {snapshot.ncWatch.lastTriggerAt ? ` · last auto trigger ${new Date(snapshot.ncWatch.lastTriggerAt).toLocaleTimeString()}` : ""}
+        </p>
+      )}
       {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>
     </>
@@ -241,7 +264,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false, qualit
 }
 
 /** Header icon button that opens the mock prediction form in a popover. */
-export function WearAlertPopover({ snapshot, qualitySpec }: { snapshot: WearAlertSnapshot | null; qualitySpec?: QualitySpec }) {
+export function WearAlertPopover({ snapshot }: { snapshot: WearAlertSnapshot | null }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -275,7 +298,7 @@ export function WearAlertPopover({ snapshot, qualitySpec }: { snapshot: WearAler
         <div id="wear-mock-popover" role="dialog" aria-label="Mock tool wear prediction"
           className="absolute right-0 top-full z-50 mt-2 w-[min(92vw,420px)] rounded-xl border border-[#243141] bg-[#121a24] p-3.5 shadow-xl shadow-black/40">
           <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-[#8fa3b5]">Mock tool wear prediction</h2>
-          <WearAlertForm snapshot={snapshot} bare qualitySpec={qualitySpec} />
+          <WearAlertForm snapshot={snapshot} bare />
         </div>
       )}
     </div>

@@ -123,23 +123,94 @@ def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
     asyncio.run(run())
 
 
-def test_quality_alert_follows_the_tolerance_sent_with_the_trigger(tmp_path):
-    _, service = make_service(tmp_path)
+def test_quality_alert_follows_the_stored_tolerance(tmp_path):
+    settings, service = make_service(tmp_path)
+    assert service.snapshot()["qualitySpec"] == {"nominal": 0, "upperTol": 0.02, "lowerTol": 0}
     # Default spec 0 … 0.02 mm: #9 (0.0088) is fine, #10 (0.027) is above USL.
     assert service.record(MockPrediction(index=9))["qualityAlert"] is None
     alert = service.record(MockPrediction(index=10))["qualityAlert"]
     assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b1", "upper", 0.027, 0.02)
 
-    # A wider tolerance from the UI makes the same value acceptable again.
-    wide = QualitySpec(nominal=0, upperTol=0.05, lowerTol=0)
-    assert service.record(MockPrediction(index=10, qualitySpec=wide))["qualityAlert"] is None
-    # A tighter one alerts on a value that used to be fine.
-    tight = QualitySpec(nominal=0, upperTol=0.005, lowerTol=0)
-    assert service.record(MockPrediction(index=9, qualitySpec=tight))["qualityAlert"]["limit"] == 0.005
+    # A wider tolerance makes the same value acceptable again.
+    service.set_quality_spec(QualitySpec(nominal=0, upperTol=0.05, lowerTol=0))
+    assert service.record(MockPrediction(index=10))["qualityAlert"] is None
+    # A tighter one alerts on a value that used to be fine, and survives a restart.
+    service.set_quality_spec(QualitySpec(nominal=0, upperTol=0.005, lowerTol=0))
+    restarted = WearAlerts(settings)
+    assert restarted.snapshot()["qualitySpec"]["upperTol"] == 0.005
+    assert restarted.record(MockPrediction(index=9))["qualityAlert"]["limit"] == 0.005
     # Below the lower limit alerts too.
-    low = QualitySpec(nominal=0.02, upperTol=0.02, lowerTol=0.01)
-    lower = service.record(MockPrediction(index=1, qualitySpec=low))["qualityAlert"]
+    restarted.set_quality_spec(QualitySpec(nominal=0.02, upperTol=0.02, lowerTol=0.01))
+    lower = restarted.record(MockPrediction(index=1))["qualityAlert"]
     assert (lower["side"], lower["limit"]) == ("lower", 0.01)
+
+
+def batch(*rows):
+    return {"process": [{"timestamp": f"2026-11-12T02:30:{second:02d}.000Z", "nc_line": value}
+                        for second, value in rows]}
+
+
+def test_nc_line_watcher_triggers_only_on_a_change_to_the_trigger_value(tmp_path):
+    async def run():
+        _, service = make_service(tmp_path)
+        service.PREDICTION_DELAY_S = 0
+        machine, state = service.settings.signals_machine_id, {}
+        watch = lambda *rows: service.on_signals(machine, batch(*rows), state)
+
+        watch((1, 20), (2, 20))            # first batch after opening: only recorded
+        watch((1, 20), (2, 20), (3, 21))   # overlapping window, a new value that is not 25
+        watch((2, 20), (3, 21), (4, "25"))  # string 25 matches; this one triggers
+        await asyncio.gather(*service.background)
+        assert [item["index"] for item in service.snapshot()["history"]] == [1]
+        assert service.snapshot()["ncWatch"]["value"] == "25"
+        assert service.snapshot()["ncWatch"]["running"] is True
+        assert service.snapshot()["ncWatch"]["lastTriggerAt"]
+        started = [e for e in service.snapshot()["events"] if e["label"] == "Prediction started"]
+        assert started[0]["detail"] == "NC line 21 → 25"
+
+        watch((4, 25), (5, 25), (6, 25))   # staying at 25 does not trigger again
+        watch((4, 25), (5, 25), (6, 25))   # repeated old rows neither
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1
+
+    asyncio.run(run())
+
+
+def test_nc_line_watcher_first_batch_cooldown_and_null(tmp_path):
+    async def run():
+        _, service = make_service(tmp_path)
+        service.PREDICTION_DELAY_S = 0
+        machine = service.settings.signals_machine_id
+
+        state = {}
+        service.on_signals(machine, batch((1, 25)), state)  # already 25 when the page opens
+        service.on_signals(machine, {"process": []}, state)
+        await asyncio.gather(*service.background)
+        assert service.snapshot()["prediction"] is None
+
+        service.on_signals(machine, batch((2, None)), state)  # null updates the previous value
+        service.on_signals(machine, batch((3, 25)), state)    # null -> 25 triggers
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1
+
+        service.on_signals(machine, batch((4, 24), (5, 25)), state)  # 10 s cooldown ignores this one
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1
+
+        service.nc_last_trigger -= 11
+        service.on_signals(machine, batch((6, 24), (7, 25)), state)
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 2
+
+        # Another machine, a different trigger value and a closed page (new state) behave as configured.
+        service.on_signals("Other", batch((8, 24), (9, 25)), {})
+        service.settings.tool_wear_nc_trigger_value = "30"
+        service.nc_last_trigger -= 11
+        service.on_signals(machine, batch((10, 29), (11, 30)), state)
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 3
+
+    asyncio.run(run())
 
 
 def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):

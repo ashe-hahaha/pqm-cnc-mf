@@ -53,3 +53,5 @@ class Settings(BaseSettings):
     tool_wear_alert_temi_enabled: bool = False
     tool_wear_alert_temi_url: str = ""
     tool_wear_alert_temi_token: SecretStr = SecretStr("")
+    # Controller NC line value that starts a prediction (the field name is fixed in wear_alerts.NC_LINE_FIELD).
+    tool_wear_nc_trigger_value: str = "25"

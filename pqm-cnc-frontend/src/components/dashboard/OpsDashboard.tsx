@@ -36,7 +36,7 @@ import { OpsAlerts } from "./OpsAlerts";
 import { OpsRecommendations } from "./OpsRecommendations";
 import { OpsSidebar } from "./OpsSidebar";
 import { ToolWearDashboard } from "./ToolWearDashboard";
-import { useWearAlertDemo, WearAlertPopover, type ToolWearAlert } from "./WearAlertDemo";
+import { saveQualitySpec, useWearAlertDemo, WearAlertPopover, type ToolWearAlert } from "./WearAlertDemo";
 import { WearAlertPopup } from "./WearAlertPopup";
 import type { WearEvent } from "./WearEventLog";
 import { ToolWearTrend } from "./ToolWearTrend";
@@ -295,15 +295,19 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   const [tolerances, setTolerances] = useState<Record<string, Tolerance>>({});
   useEffect(() => { setTolerances(readTolerances()); }, []);
   const handleToleranceChange = useCallback((balloonId: string, tolerance: Tolerance) => {
+    // The quality balloon's tolerance lives on the backend, which uses it for every prediction trigger.
+    if (balloonId === (wearDemo?.qualityBalloonId ?? "b1")) void saveQualitySpec(tolerance);
     setTolerances((previous) => {
       const next = { ...previous, [balloonId]: tolerance };
       writeTolerances(next);
       return next;
     });
-  }, []);
+  }, [wearDemo?.qualityBalloonId]);
+  const backendQualitySpec = wearDemo?.qualitySpec;
   const allBalloons = useMemo(
-    () => applyTolerances(data.balloons, tolerances),
-    [data.balloons, tolerances],
+    () => applyTolerances(data.balloons, backendQualitySpec
+      ? { ...tolerances, [wearDemo?.qualityBalloonId ?? "b1"]: backendQualitySpec } : tolerances),
+    [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId],
   );
 
   const pageBalloons = useMemo(
@@ -353,10 +357,6 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     [inspect, allBalloons],
   );
   const isQualityBalloon = inspectBalloon != null && inspectBalloon.id === qualityBalloonId;
-  const qualityBalloon = allBalloons.find((b) => b.id === qualityBalloonId);
-  const qualitySpec = qualityBalloon
-    ? { nominal: qualityBalloon.nominal, upperTol: qualityBalloon.upperTol, lowerTol: qualityBalloon.lowerTol }
-    : undefined;
   const qualityTrend = useMemo(
     () => (isQualityBalloon && inspectBalloon ? qualityTrendFromHistory(qualityHistory ?? [], inspectBalloon) : []),
     [isQualityBalloon, inspectBalloon, qualityHistory],
@@ -455,7 +455,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           canLoadNext={status.canLoadNext}
           onLoadNextPiece={loadNextPiece}
           monitorTabs={monitorTabs}
-          actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} qualitySpec={qualitySpec} /> : undefined}
+          actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} /> : undefined}
         />
 
         <div className="flex-1 overflow-auto p-3">

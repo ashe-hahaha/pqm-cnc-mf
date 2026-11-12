@@ -25,6 +25,8 @@ RESET_RECORDS = 8  # predictions the demo is reset to (series entries #1 … #8)
 HISTORY_RETURNED = 10  # predictions included in the snapshot (sliding window)
 EVENTS_RETURNED = 100  # events included in the snapshot
 EVENTS_KEPT = 1000  # events retained in the database
+NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
+NC_COOLDOWN_S = 10  # minimum time between automatic triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 
 
@@ -34,7 +36,7 @@ class WearValues(BaseModel):
 
 
 class QualitySpec(BaseModel):
-    """Tolerance of the quality balloon as currently set in the UI: nominal +upperTol / -lowerTol."""
+    """Tolerance of the quality balloon (stored by the backend): nominal +upperTol / -lowerTol."""
     nominal: float = Field(allow_inf_nan=False)
     upperTol: float = Field(ge=0, allow_inf_nan=False)
     lowerTol: float = Field(ge=0, allow_inf_nan=False)
@@ -43,12 +45,31 @@ class QualitySpec(BaseModel):
 class MockPrediction(BaseModel):
     """Trigger request. `index` (1-based) picks a series entry; omitted = next in the cycle."""
     index: int | None = Field(default=None, ge=1, le=len(PREDICTION_SERIES))
-    qualitySpec: QualitySpec | None = None
+
+
+def normalize_nc(value):
+    """Compare NC line values regardless of type: 25, 25.0 and "25" are the same value; empty is None."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if value is None or str(value).strip() == "":
+        return None
+    return str(value).strip()
+
+
+def nc_line_rising(previous, current, trigger):
+    """Auto-trigger rule (kept separate so it is easy to replace): the value changes from something else to the trigger."""
+    return current == trigger and previous != trigger
 
 
 class WearAlerts:
+    PREDICTION_DELAY_S = 3
+
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.nc = {"value": None, "seenAt": None, "lastTriggerAt": None}
+        self.nc_last_trigger = None  # monotonic time of the last automatic trigger
+        self.prediction_running = False
+        self.background: set[asyncio.Task] = set()
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
         self.tasks: list[asyncio.Task] = []
         self.listeners: set[asyncio.Queue] = set()
@@ -61,8 +82,10 @@ class WearAlerts:
                     seq INTEGER PRIMARY KEY, machine TEXT NOT NULL, tool TEXT NOT NULL, body TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS predictions_tool ON predictions(machine, tool, seq);
+                CREATE TABLE IF NOT EXISTS quality_spec (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
+                INSERT OR IGNORE INTO quality_spec VALUES (1, '{"nominal":0.0,"upperTol":0.02,"lowerTol":0.0}');
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
@@ -83,12 +106,14 @@ class WearAlerts:
             alerts = db.execute("SELECT body FROM alerts ORDER BY seq DESC LIMIT 20").fetchall()
             events = db.execute("SELECT body FROM events ORDER BY seq DESC LIMIT ?", (EVENTS_RETURNED,)).fetchall()
             pending = db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
+            spec = db.execute("SELECT body FROM quality_spec WHERE id=1").fetchone()[0]
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
                 "history": [json.loads(row[0]) for row in reversed(history)],
                 "series": [{"index": i + 1, "diameter": d, "length": l, "quality": q}
                            for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
-                "qualityBalloonId": QUALITY_BALLOON_ID,
+                "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
+                "ncWatch": self.nc_status(),
                 "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
                 "destinations": self.destinations, "pendingNotifications": pending,
                 "alerts": [json.loads(row[0]) for row in alerts],
@@ -98,6 +123,107 @@ class WearAlerts:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE thresholds SET body=? WHERE id=1", (values.model_dump_json(),))
         return values
+
+    def get_quality_spec(self, db=None):
+        if db is not None:
+            return QualitySpec.model_validate_json(db.execute("SELECT body FROM quality_spec WHERE id=1").fetchone()[0])
+        with closing(sqlite3.connect(self.path)) as db:
+            return self.get_quality_spec(db)
+
+    def set_quality_spec(self, spec: QualitySpec):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("UPDATE quality_spec SET body=? WHERE id=1", (spec.model_dump_json(),))
+        return spec
+
+    def nc_status(self):
+        seen = self.nc["seenAt"]
+        running = seen is not None and time.monotonic() - seen < max(5, 3 * self.settings.signals_poll_seconds)
+        return {"field": NC_LINE_FIELD, "triggerValue": self.settings.tool_wear_nc_trigger_value,
+                "running": running, "value": self.nc["value"], "lastTriggerAt": self.nc["lastTriggerAt"]}
+
+    def on_signals(self, machine, batch, state):
+        """Watch the controller NC line in every signal batch (only runs while a page is subscribed).
+
+        `state` lives as long as the subscription: the first batch after a page opens only records the current value.
+        """
+        if machine != self.settings.signals_machine_id:
+            return
+        trigger = normalize_nc(self.settings.tool_wear_nc_trigger_value)
+        rows = sorted((row for row in batch.get("process", []) if row.get("timestamp")),
+                      key=lambda row: row["timestamp"])
+        first = "last_timestamp" not in state
+        changed = False
+        fire = None
+        for row in rows:
+            if not first and row["timestamp"] <= state["last_timestamp"]:
+                continue  # windows overlap and a stopped database repeats old rows
+            current = normalize_nc(row.get(NC_LINE_FIELD))
+            if not first and nc_line_rising(state["value"], current, trigger):
+                fire = (state["value"], current)
+            if current != state.get("value"):
+                changed = True
+            state["value"] = current
+            state["last_timestamp"] = row["timestamp"]
+        self.nc["seenAt"] = time.monotonic()
+        if state.get("value") != self.nc["value"]:
+            self.nc["value"] = state.get("value")
+            changed = True
+        if fire:
+            self.start_auto_prediction(*fire)
+        elif changed:
+            self.notify_listeners()
+
+    def start_auto_prediction(self, previous, current):
+        now = time.monotonic()
+        if not self.settings.tool_wear_demo_enabled or self.prediction_running:
+            return
+        if self.nc_last_trigger is not None and now - self.nc_last_trigger < NC_COOLDOWN_S:
+            logger.info("NC line trigger ignored (cooldown) %s -> %s", previous, current)
+            return
+        self.nc_last_trigger = now
+        self.nc["lastTriggerAt"] = datetime.now(timezone.utc).isoformat()
+        logger.info("NC line %s -> %s: starting prediction", previous, current)
+        task = asyncio.create_task(self.run_prediction(
+            MockPrediction(), detail=f"NC line {previous if previous is not None else 'null'} → {current}"))
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
+    async def run_prediction(self, values: MockPrediction, detail="Mock prediction"):
+        """Manual and automatic triggers share this flow: events, prediction, alerts and notifications."""
+        self.prediction_running = True
+        try:
+            self.log_event("Prediction started", TOOL_NO, detail=detail)
+            await asyncio.sleep(self.PREDICTION_DELAY_S)
+            result = await asyncio.to_thread(self.record, values)
+            self.log_prediction_results(result)
+            self.notify_listeners()
+            return result
+        finally:
+            self.prediction_running = False
+
+    def log_prediction_results(self, result):
+        service = self
+        prediction = result["prediction"]
+        service.log_event("Prediction completed", TOOL_NO, timestamp=prediction["timestampUtc"],
+                          detail=f'#{prediction["index"]} · Diameter {prediction["diameter"]} mm · Length {prediction["length"]} mm · B1 {prediction["quality"]} mm')
+        alert = result["alert"]
+        if alert:
+            detail = " · ".join(
+                f'{metric.capitalize()} {prediction[metric]} mm > {alert["thresholds"][metric]} mm'
+                for metric in alert["metrics"]
+            )
+            service.log_event("Alert triggered", TOOL_NO, timestamp=alert["timestampUtc"],
+                              detail=detail, event_id=f'{alert["alertId"]}:alert')
+            for destination in service.destinations:
+                service.log_event("Notification queued", TOOL_NO, detail=service.destination_label(destination),
+                                  event_id=f'{alert["alertId"]}:{destination}:queued')
+        quality_alert = result["qualityAlert"]
+        if quality_alert:
+            comparison = ">" if quality_alert["side"] == "upper" else "<"
+            service.log_event("Quality alert triggered", TOOL_NO, timestamp=quality_alert["timestampUtc"],
+                              detail=f'{quality_alert["balloonId"].upper()} {quality_alert["value"]} mm {comparison} '
+                                     f'{"USL" if quality_alert["side"] == "upper" else "LSL"} {round(quality_alert["limit"], 6)} mm',
+                              event_id=f'{quality_alert["alertId"]}:alert')
 
     def reset(self):
         """Back to a known demo state: only the first RESET_RECORDS predictions, no alerts, events or pending sends.
@@ -125,11 +251,10 @@ class WearAlerts:
         now = datetime.now(timezone.utc).isoformat()
         machine, tool = self.settings.signals_machine_id, TOOL_NO
         alert = quality_alert = None
-        spec = values.qualitySpec or QualitySpec(
-            nominal=DEFAULT_QUALITY_SPEC[0], upperTol=DEFAULT_QUALITY_SPEC[1], lowerTol=DEFAULT_QUALITY_SPEC[2])
-        usl, lsl = round(spec.nominal + spec.upperTol, 9), round(spec.nominal - spec.lowerTol, 9)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
+            spec = self.get_quality_spec(db)
+            usl, lsl = round(spec.nominal + spec.upperTol, 9), round(spec.nominal - spec.lowerTol, 9)
             cursor = db.execute("SELECT next_index FROM cursor WHERE id=1").fetchone()[0]
             position = (values.index - 1) if values.index else cursor % len(PREDICTION_SERIES)
             diameter, length, quality = PREDICTION_SERIES[position]
@@ -311,35 +436,17 @@ async def set_thresholds(request: Request, values: WearValues):
     return result
 
 
-@router.post("/prediction")
-async def mock_prediction(request: Request, values: MockPrediction):
+@router.put("/quality-spec")
+async def set_quality_spec(request: Request, spec: QualitySpec):
     service = enabled_service(request)
-    service.log_event("Prediction started", TOOL_NO, detail="Mock prediction")
-    await asyncio.sleep(3)
-    result = await asyncio.to_thread(service.record, values)
-    prediction = result["prediction"]
-    service.log_event("Prediction completed", TOOL_NO, timestamp=prediction["timestampUtc"],
-                      detail=f'#{prediction["index"]} · Diameter {prediction["diameter"]} mm · Length {prediction["length"]} mm · B1 {prediction["quality"]} mm')
-    alert = result["alert"]
-    if alert:
-        detail = " · ".join(
-            f'{metric.capitalize()} {prediction[metric]} mm > {alert["thresholds"][metric]} mm'
-            for metric in alert["metrics"]
-        )
-        service.log_event("Alert triggered", TOOL_NO, timestamp=alert["timestampUtc"],
-                          detail=detail, event_id=f'{alert["alertId"]}:alert')
-        for destination in service.destinations:
-            service.log_event("Notification queued", TOOL_NO, detail=service.destination_label(destination),
-                              event_id=f'{alert["alertId"]}:{destination}:queued')
-    quality_alert = result["qualityAlert"]
-    if quality_alert:
-        comparison = ">" if quality_alert["side"] == "upper" else "<"
-        service.log_event("Quality alert triggered", TOOL_NO, timestamp=quality_alert["timestampUtc"],
-                          detail=f'{quality_alert["balloonId"].upper()} {quality_alert["value"]} mm {comparison} '
-                                 f'{"USL" if quality_alert["side"] == "upper" else "LSL"} {round(quality_alert["limit"], 6)} mm',
-                          event_id=f'{quality_alert["alertId"]}:alert')
+    result = await asyncio.to_thread(service.set_quality_spec, spec)
     service.notify_listeners()
     return result
+
+
+@router.post("/prediction")
+async def mock_prediction(request: Request, values: MockPrediction):
+    return await enabled_service(request).run_prediction(values)
 
 
 @router.post("/reset")

@@ -98,6 +98,7 @@ class Feed:
         self.latest: dict | None = None
         self.status = {"state": "connecting"}
         self.task: asyncio.Task | None = None
+        self.state: dict = {}  # per-feed scratch space for on_batch observers; dropped with the feed
 
     def publish(self, event: str, payload: dict):
         for queue in self.listeners:
@@ -107,9 +108,10 @@ class Feed:
 
 
 class SignalHub:
-    def __init__(self, settings: Settings, fetcher=fetch_signals):
+    def __init__(self, settings: Settings, fetcher=fetch_signals, on_batch=None):
         self.settings = settings
         self.fetcher = fetcher
+        self.on_batch = on_batch  # called as on_batch(machine, batch, feed.state) after every successful query
         self.feeds: dict[str, Feed] = {}
 
     async def poll(self, machine: str, feed: Feed):
@@ -117,6 +119,11 @@ class SignalHub:
         while True:
             try:
                 batch = await self.fetcher(self.settings, machine)
+                if self.on_batch:
+                    try:
+                        self.on_batch(machine, batch, feed.state)
+                    except Exception:
+                        logger.warning("Signal observer failed for %s", machine, exc_info=True)
                 if feed.latest is None or batch != feed.latest:
                     feed.latest = batch
                     last_change = monotonic()

@@ -28,6 +28,7 @@ export function BalloonDetail({
       key={`${balloon.id}:${balloon.nominal}:${balloon.upperTol}:${balloon.lowerTol}`}
       balloon={balloon}
       editing={editing}
+      onEdit={onToleranceChange ? () => setEditingId(balloon.id) : undefined}
       onClose={() => setEditingId(null)}
       onSave={onToleranceChange ? (tolerance) => onToleranceChange(balloon.id, tolerance) : undefined}
     />
@@ -160,11 +161,14 @@ const inputStyle =
 function SpecRow({
   balloon,
   editing,
+  onEdit,
   onClose,
   onSave,
 }: {
   balloon: DrawingBalloon;
   editing: boolean;
+  /** Click on the spec value (nominal and tolerance) to edit it. */
+  onEdit?: () => void;
   onClose: () => void;
   onSave?: (tolerance: Tolerance) => void;
 }) {
@@ -180,7 +184,16 @@ function SpecRow({
       <div className="flex items-baseline justify-between gap-2 border-b border-[#2a3a4a]/60 py-1">
         <dt className="text-[9px] uppercase tracking-[0.08em] text-[#8fa3b5]">Spec</dt>
         <dd className="flex items-baseline gap-1.5 text-right text-xs tabular-nums leading-none text-foreground">
-          {formatSpec(balloon)}
+          {onEdit && onSave ? (
+            <button
+              type="button"
+              title="Edit nominal and tolerance"
+              onClick={onEdit}
+              className="rounded px-1 tabular-nums hover:bg-[#192a39] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-1 focus-visible:outline-sky-400"
+            >
+              {formatSpec(balloon)}
+            </button>
+          ) : formatSpec(balloon)}
         </dd>
       </div>
     );
