@@ -1,0 +1,11 @@
+# Local test: docker compose -f go2rtc/compose.yaml up
+services:
+  go2rtc:
+    image: ghcr.io/alexxit/go2rtc:1.9.15
+    environment:
+      CCTV_RTSP_URL: ${CCTV_RTSP_URL:?Set CCTV_RTSP_URL in go2rtc/.env}
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+    ports:
+      - "127.0.0.1:1984:1984"   # this computer only
+    restart: unless-stopped

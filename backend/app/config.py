@@ -55,3 +55,11 @@ class Settings(BaseSettings):
     tool_wear_alert_temi_token: SecretStr = SecretStr("")
     # Controller NC line value that starts a prediction (the field name is fixed in wear_alerts.NC_LINE_FIELD).
     tool_wear_nc_trigger_value: str = "25"
+    # Machine CCTV: still pictures from the Hikvision NVR (empty host = disabled).
+    cctv_nvr_host: str = ""
+    cctv_http_port: int = Field(default=80, ge=1, le=65535)
+    cctv_channel: str = "102"
+    cctv_user: str = ""
+    cctv_password: SecretStr = SecretStr("")
+    cctv_timeout_seconds: float = Field(default=10, ge=8, le=60)
+    cctv_cache_seconds: float = Field(default=1, ge=0, le=30)

@@ -14,6 +14,17 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  go2rtc:
+    # Live CCTV for the Tool Wear page: restreams the NVR sub-stream to browsers (H.264 passthrough).
+    # Internal only (no published port): the frontend reaches it at /cctv/ws. Set CCTV_RTSP_URL in .env.
+    image: ghcr.io/alexxit/go2rtc:1.9.15
+    environment:
+      CCTV_RTSP_URL: ${CCTV_RTSP_URL:-}
+    configs:
+      - source: go2rtc_config
+        target: /config/go2rtc.yaml
+    restart: unless-stopped
+
   backend:
     image: ${DOCKERHUB_USERNAME:?Set DOCKERHUB_USERNAME}/pqm-cnc-backend:latest
     env_file:
@@ -31,6 +42,18 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+configs:
+  go2rtc_config:
+    content: |
+      api:
+        listen: ":1984"
+      rtsp:
+        listen: ""
+      webrtc:
+        listen: ""
+      streams:
+        v61: $${CCTV_RTSP_URL}
 
 volumes:
   machining-data:

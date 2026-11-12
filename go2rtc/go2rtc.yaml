@@ -1,0 +1,13 @@
+# Restreams the machine CCTV (Hikvision NVR sub-stream, H.264) to browsers. No credentials in this file:
+# CCTV_RTSP_URL comes from the environment (go2rtc/.env, not committed).
+api:
+  listen: ":1984"
+  # Local testing only: lets the page on another port (localhost:3001) open the WebSocket.
+  # Before deploying, drop this and reach go2rtc through a same-origin proxy instead.
+  origin: "*"
+rtsp:
+  listen: ""   # the RTSP server is not needed
+webrtc:
+  listen: ""   # WebRTC is not used (MSE over WebSocket only)
+streams:
+  v61: ${CCTV_RTSP_URL}

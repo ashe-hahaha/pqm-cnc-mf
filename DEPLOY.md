@@ -37,3 +37,33 @@ docker compose cp ./MachiningData/. frontend:/app/pqm-cnc-frontend/data/Machinin
 docker compose cp ./pqm/. frontend:/app/pqm-cnc-frontend/data/pqm/
 docker compose exec -u root frontend chown -R node:node data/MachiningData data/pqm
 ```
+
+## Machine CCTV
+
+Tool Wear 页的 CCTV 块有两条通路：
+
+- **实时视频：** `compose.yaml` 里的 `go2rtc` 服务拉取 NVR 子码流（H.264，不转码），浏览器通过前端同域路径 `/cctv/ws`（WebSocket，MSE 播放）观看。go2rtc 不发布端口，只在 Compose 内部网络里可达；前端只转发固定的 `v61` 流。
+- **静态画面（兜底）：** 后端 `GET /api/cctv/snapshot` 用 Digest 认证取 NVR 的 JPEG，视频没有出画面时页面每 1.5 秒刷新一次。
+
+服务器配置（账号密码不要提交到仓库）：
+
+1. 根目录 `.env`（和 `DOCKERHUB_USERNAME` 同一个文件），密码里的 `@` 写成 `%40`：
+
+   ```
+   CCTV_RTSP_URL=rtsp://<user>:<password>@172.20.115.109:554/Streaming/Channels/102
+   ```
+
+2. `backend.env`（只给静态画面兜底用，不加则兜底不可用，视频不受影响）：
+
+   ```
+   CCTV_NVR_HOST=172.20.115.109
+   CCTV_HTTP_PORT=80
+   CCTV_CHANNEL=102
+   CCTV_USER=<user>
+   CCTV_PASSWORD=<password>
+   ```
+
+3. 服务器要能访问 NVR 的 554 端口（视频）和 80 端口（静态画面）。
+4. 前端和后端镜像都要重新构建（前端的流地址在构建时写入）。然后 `docker compose pull && docker compose up -d`。
+
+检查：`docker compose logs go2rtc` 能看到拉流；页面 CCTV 块状态显示 "Live video"。视频不出画面但静态画面正常，多半是 554 端口不通或 `/cctv/ws` 的 WebSocket 没有被前端转发。

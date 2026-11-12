@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { useControllerData, controllerOffset, type ControllerRow } from "@/lib/useControllerData";
 import { Panel } from "./Panel";
 import { ToolImageBlock } from "./ToolImageBlock";
+import { CctvBlock } from "./CctvBlock";
 import { ResizableToolBlock } from "./ResizableToolBlock";
 import { ColResizeHandle } from "./ResizableBox";
 import { useWearHistory } from "@/lib/useWearHistory";
@@ -244,7 +245,10 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
               <ColResizeHandle locked={locked} onDrag={dx => resizeColumns("history", dx)} />
             </div>
             <ResizableToolBlock id="photo" width={520} height={380} locked={locked} fillWidth>
-              <ToolImageBlock />
+              <div className="grid h-full min-h-0 grid-cols-2 gap-3">
+                <div className="min-h-0 min-w-0"><ToolImageBlock /></div>
+                <div className="min-h-0 min-w-0"><CctvBlock /></div>
+              </div>
             </ResizableToolBlock>
           </div>
         </div>

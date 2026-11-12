@@ -8,7 +8,9 @@ COPY pqm-cnc-frontend/package*.json pqm-cnc-frontend/.npmrc ./
 RUN npm ci --ignore-scripts
 COPY pqm-cnc-frontend/ ./
 ENV NEXT_PUBLIC_DATA_API_URL=/backend \
+    NEXT_PUBLIC_CCTV_STREAM_URL=/cctv/ws \
     PQM_BACKEND_ORIGIN=http://backend:8000 \
+    PQM_GO2RTC_ORIGIN=http://go2rtc:1984 \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
@@ -16,7 +18,8 @@ FROM node:24-bookworm-slim
 WORKDIR /app/pqm-cnc-frontend
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
-    PQM_BACKEND_ORIGIN=http://backend:8000
+    PQM_BACKEND_ORIGIN=http://backend:8000 \
+    PQM_GO2RTC_ORIGIN=http://go2rtc:1984
 COPY --from=build --chown=node:node /app/pqm-cnc-frontend ./
 RUN mkdir -p data/MachiningData data/pqm && chown -R node:node data
 USER node
