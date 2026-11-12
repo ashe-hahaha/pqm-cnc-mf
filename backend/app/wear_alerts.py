@@ -198,7 +198,8 @@ class WearAlerts:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(self.settings.tool_wear_alert_temi_url, json=event, headers=headers)
+            # The Temi trigger takes no payload: an empty POST (the alert is identified by the header only).
+            response = await client.post(self.settings.tool_wear_alert_temi_url, headers=headers)
             response.raise_for_status()
         logger.info("Temi API triggered alertId=%s status=%s", event["alertId"], response.status_code)
         self.log_event("Notification sent", event["toolNo"], detail="Temi API",

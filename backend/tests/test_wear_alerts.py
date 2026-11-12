@@ -1,5 +1,6 @@
 import asyncio
 import json
+import httpx
 import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
@@ -200,3 +201,26 @@ def test_delivery_failures_are_logged_as_events_but_rate_limited(tmp_path):
 
     details = [e["detail"] for e in service.snapshot()["events"] if e["label"] == "Notification failed"]
     assert details == ["Kafka · makino_tool_wear_alert · TimeoutError · attempt 1", "Temi API · ValueError · attempt 1"]
+
+
+def test_temi_trigger_is_an_empty_post_with_the_alert_id_as_idempotency_key(tmp_path, monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(request)
+        return httpx.Response(200)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr("app.wear_alerts.httpx.AsyncClient",
+                        lambda **options: real_client(transport=httpx.MockTransport(handler), **options))
+    settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path), tool_wear_alert_temi_enabled=True,
+                        tool_wear_alert_temi_url="http://172.20.115.53:3002/Trigger")
+    service = WearAlerts(settings)
+    asyncio.run(service.notify_temi({"alertId": "alert-1", "toolNo": "25"}))
+
+    request = seen[0]
+    assert (request.method, str(request.url)) == ("POST", "http://172.20.115.53:3002/Trigger")
+    assert request.content == b""
+    assert request.headers["Idempotency-Key"] == "alert-1"
+    assert "authorization" not in request.headers
+    assert [e["detail"] for e in service.snapshot()["events"]] == ["Temi API"]

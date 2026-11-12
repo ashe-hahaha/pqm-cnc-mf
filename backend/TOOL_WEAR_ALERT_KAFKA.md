@@ -55,4 +55,4 @@ sudo docker compose logs -f backend
 
 Thresholds, prediction state, alert history and pending deliveries are stored in a separate SQLite database inside the existing microscope volume.
 
-To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_ALERT_TEMI_URL`. The current adapter sends an HTTP POST with the alert JSON above and `Idempotency-Key: <alertId>`. Set `TOOL_WEAR_ALERT_TEMI_TOKEN` if the endpoint expects a Bearer token. Confirm the request contract with the Temi endpoint owner before enabling it.
+To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_ALERT_TEMI_URL`. The current adapter sends an HTTP POST with an empty body and `Idempotency-Key: <alertId>`. Set `TOOL_WEAR_ALERT_TEMI_TOKEN` if the endpoint expects a Bearer token. Confirm the request contract with the Temi endpoint owner before enabling it.
