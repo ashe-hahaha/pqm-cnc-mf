@@ -56,9 +56,15 @@ def normalize_nc(value):
     return str(value).strip()
 
 
-def nc_line_rising(previous, current, trigger):
-    """Auto-trigger rule (kept separate so it is easy to replace): the value changes from something else to the trigger."""
-    return current == trigger and previous != trigger
+def nc_trigger_values(settings: Settings):
+    """Configured trigger values, normalised, in the order they were written."""
+    values = (normalize_nc(item) for item in settings.tool_wear_nc_trigger_values.split(","))
+    return [value for value in dict.fromkeys(values) if value is not None]
+
+
+def nc_line_rising(previous, current, triggers):
+    """Auto-trigger rule (kept separate so it is easy to replace): the line changes to any trigger value."""
+    return current in triggers and previous != current
 
 
 class WearAlerts:
@@ -140,7 +146,7 @@ class WearAlerts:
     def nc_status(self):
         seen = self.nc["seenAt"]
         running = seen is not None and time.monotonic() - seen < max(5, 3 * self.settings.signals_poll_seconds)
-        return {"field": NC_LINE_FIELD, "triggerValue": self.settings.tool_wear_nc_trigger_value,
+        return {"field": NC_LINE_FIELD, "triggerValues": nc_trigger_values(self.settings),
                 "running": running, "value": self.nc["value"], "lastTriggerAt": self.nc["lastTriggerAt"]}
 
     def on_signals(self, machine, batch, state):
@@ -150,7 +156,7 @@ class WearAlerts:
         """
         if machine != self.settings.signals_machine_id:
             return
-        trigger = normalize_nc(self.settings.tool_wear_nc_trigger_value)
+        triggers = nc_trigger_values(self.settings)
         rows = sorted((row for row in batch.get("process", []) if row.get("timestamp")),
                       key=lambda row: row["timestamp"])
         first = "last_timestamp" not in state
@@ -160,7 +166,7 @@ class WearAlerts:
             if not first and row["timestamp"] <= state["last_timestamp"]:
                 continue  # windows overlap and a stopped database repeats old rows
             current = normalize_nc(row.get(NC_LINE_FIELD))
-            if not first and nc_line_rising(state["value"], current, trigger):
+            if not first and nc_line_rising(state["value"], current, triggers):
                 fire = (state["value"], current)
             if current != state.get("value"):
                 changed = True
