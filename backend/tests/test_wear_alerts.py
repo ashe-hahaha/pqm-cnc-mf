@@ -325,6 +325,52 @@ def test_nc_fallback_is_cancelled_by_a_range_trigger_and_can_be_disabled(tmp_pat
     asyncio.run(run())
 
 
+def qc_batch(*rows):
+    """rows: (second, nc_line, macros) -> a process batch whose rows carry a `macros` map."""
+    return {"process": [{"timestamp": f"2026-11-12T02:31:{second:02d}.000Z", "nc_line": line, "macros": macros}
+                        for second, line, macros in rows]}
+
+
+def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path):
+    async def run():
+        _, service = make_service(tmp_path)
+        service.PREDICTION_DELAY_S = 0
+        machine, state = service.settings.signals_machine_id, {}
+        watch = lambda *rows: service.on_signals(machine, qc_batch(*rows), state)
+        last_qc = lambda: service.snapshot()["lastQc"]
+        assert last_qc() is None
+
+        watch((1, 92, {"956": 9.5}))                       # first batch: only recorded, even if it is 93 later
+        watch((2, 93, {"956": 9.987}), (3, 93, {"956": 9.0}))  # arrival at 93 samples once (first row of the stay)
+        await asyncio.gather(*service.background)
+        assert last_qc()["value"] == 9.987 and last_qc()["macro"] == "956"
+        assert last_qc()["timestampUtc"] == "2026-11-12T02:31:02.000Z"
+        assert service.snapshot()["history"] == []         # no prediction was started
+        assert service.snapshot()["ncWatch"]["fallbackPending"] is False
+        labels = [e["label"] for e in service.snapshot()["events"]]
+        assert labels == ["QC measured"]
+
+        watch((4, 93, {"956": 8.0}))                       # still at 93: no new sample
+        assert last_qc()["value"] == 9.987
+
+        for i, macros in enumerate(({}, {"955": 1.0}, {"956": None}, {"956": float("nan")}, None, {"956": "x"})):
+            watch((10 + 2 * i, 40, {}))
+            watch((11 + 2 * i, 93, macros))                # no usable value: last QC stays, a note is logged
+            assert last_qc()["value"] == 9.987
+        assert [e["label"] for e in service.snapshot()["events"]].count("QC not available") == 6
+
+        watch((30, 40, {}))
+        watch((31, 93, {"956": 10}))                       # integers are fine; a newer value replaces the old one
+        assert last_qc()["value"] == 10.0
+
+        restarted = WearAlerts(service.settings)           # persisted
+        assert restarted.snapshot()["lastQc"]["value"] == 10.0
+        service.reset()
+        assert service.snapshot()["lastQc"] is None        # Reset demo clears it
+
+    asyncio.run(run())
+
+
 def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):
     _, service = make_service(tmp_path)
     result = service.record(MockPrediction(index=10))

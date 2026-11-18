@@ -43,6 +43,8 @@ export type WearAlertSnapshot = {
   /** Tolerance of the quality balloon, stored by the backend (used by every trigger). */
   qualitySpec?: QualitySpec;
   ncWatch?: NcWatch;
+  /** Last measured diameter (mm) sampled from the controller when the NC line reaches the QC step. */
+  lastQc?: { value: number; timestampUtc: string; machineId?: string; toolNo?: string | number | null } | null;
   /** 1-based index the next automatic trigger will use. */
   nextIndex?: number;
   alerts: WearAlert[];

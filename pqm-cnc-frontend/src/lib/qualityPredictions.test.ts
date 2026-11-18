@@ -36,6 +36,13 @@ describe("quality predictions from backend history", () => {
     expect(abnormal.passProbability).toBeLessThan(0.5);
   });
 
+  it("passes the controller's last measured value through to Last QC", () => {
+    expect(qualityPredictionFromHistory([at(0.008, 9)], b1)!.lastQcValue).toBeNull();
+    expect(qualityPredictionFromHistory([at(0.008, 9)], b1, null)!.lastQcValue).toBeNull();
+    expect(qualityPredictionFromHistory([at(0.008, 9)], b1, Number.NaN)!.lastQcValue).toBeNull();
+    expect(qualityPredictionFromHistory([at(0.008, 9)], b1, 0.012)!.lastQcValue).toBe(0.012);
+  });
+
   it("follows a changed tolerance", () => {
     const wider = { ...b1, upperTol: 0.05 };
     expect(qualityTrendFromHistory([at(0.027, 10)], wider)[0]!.usl).toBe(0.05);

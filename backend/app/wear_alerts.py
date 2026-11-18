@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import sqlite3
 import time
 from contextlib import closing
@@ -27,6 +28,8 @@ EVENTS_RETURNED = 100  # events included in the snapshot
 EVENTS_KEPT = 1000  # events retained in the database
 NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
 NC_COOLDOWN_S = 10  # minimum time between automatic triggers
+NC_QC_VALUE = "93"  # nc_line value that samples the measured quality (no prediction is started)
+QC_MACRO = "956"  # key of the process row's `macros` object that holds the measured diameter (mm)
 NC_RANGE_LOW, NC_RANGE_HIGH = 73, 74  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 
@@ -88,6 +91,15 @@ def nc_trigger_kind(previous, current, triggers):
     return None
 
 
+def qc_from_row(row):
+    """Measured diameter (mm) from a process row's `macros` map (string macro number -> float); None if unusable."""
+    macros = row.get("macros")
+    value = macros.get(QC_MACRO) if isinstance(macros, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
+
+
 class WearAlerts:
     PREDICTION_DELAY_S = 3
 
@@ -111,6 +123,7 @@ class WearAlerts:
                 );
                 CREATE INDEX IF NOT EXISTS predictions_tool ON predictions(machine, tool, seq);
                 CREATE TABLE IF NOT EXISTS quality_spec (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS last_qc (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
@@ -137,12 +150,14 @@ class WearAlerts:
             events = db.execute("SELECT body FROM events ORDER BY seq DESC LIMIT ?", (EVENTS_RETURNED,)).fetchall()
             pending = db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
             spec = db.execute("SELECT body FROM quality_spec WHERE id=1").fetchone()[0]
+            last_qc = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
                 "history": [json.loads(row[0]) for row in reversed(history)],
                 "series": [{"index": i + 1, "diameter": d, "length": l, "quality": q}
                            for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
+                "lastQc": json.loads(last_qc[0]) if last_qc else None,
                 "ncWatch": self.nc_status(),
                 "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
                 "destinations": self.destinations, "pendingNotifications": pending,
@@ -187,6 +202,7 @@ class WearAlerts:
         first = "last_timestamp" not in state
         changed = False
         fires = []
+        qc_row = None
         for row in rows:
             if not first and row["timestamp"] <= state["last_timestamp"]:
                 continue  # windows overlap and a stopped database repeats old rows
@@ -194,6 +210,8 @@ class WearAlerts:
             kind = None if first else nc_trigger_kind(state["value"], current, triggers)
             if kind:
                 fires.append((state["value"], current, kind))
+            if not first and current == NC_QC_VALUE and state["value"] != current:
+                qc_row = row  # the line just reached the QC step (one sample per arrival)
             if current != state.get("value"):
                 changed = True
             state["value"] = current
@@ -202,10 +220,29 @@ class WearAlerts:
         if state.get("value") != self.nc["value"]:
             self.nc["value"] = state.get("value")
             changed = True
+        if qc_row is not None:
+            self.record_qc(qc_row)
         for fire in fires:  # in line order; the shared cooldown lets only the first one through
             self.start_auto_prediction(*fire)
         if not fires and changed:
             self.notify_listeners()
+
+    def record_qc(self, row):
+        """NC line reached NC_QC_VALUE: keep the measured diameter (macro QC_MACRO) as the quality balloon's last QC."""
+        if not self.settings.tool_wear_demo_enabled:
+            return
+        value = qc_from_row(row)
+        if value is None:
+            logger.info("NC line %s: no valid macro %s value, last QC unchanged", NC_QC_VALUE, QC_MACRO)
+            self.log_event("QC not available", TOOL_NO, detail=f"NC line {NC_QC_VALUE} · macro {QC_MACRO} missing or invalid")
+            return
+        qc = {"value": value, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
+              "toolNo": row.get("tool_no"), "macro": QC_MACRO}
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("INSERT OR REPLACE INTO last_qc VALUES (1, ?)", (json.dumps(qc),))
+        logger.info("NC line %s: last QC (macro %s) = %s mm", NC_QC_VALUE, QC_MACRO, value)
+        self.log_event("QC measured", TOOL_NO, detail=f"Diameter {round(value, 6)} mm · macro {QC_MACRO}")
+        self.notify_listeners()
 
     def start_auto_prediction(self, previous, current, kind="start"):
         """Start one automatic prediction. kind: "start" (trigger value), "range" (entered 73-74) or "fallback".
@@ -300,7 +337,7 @@ class WearAlerts:
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            for table in ("predictions", "alerts", "outbox"):
+            for table in ("predictions", "alerts", "outbox", "last_qc"):
                 db.execute(f"DELETE FROM {table}")
             for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
                 stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()

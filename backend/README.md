@@ -55,7 +55,7 @@ uv run pytest
 
 `GET /api/signals/stream?machine_id=Makino_01` 持续返回 SSE。省略机床时使用 `SIGNALS_MACHINE_ID`。
 
-backend 连接 `SIGNALS_WS_URL`（默认 `ws://172.20.114.237:4000/ws`），每轮查询最近 10 秒的 vibration XYZ 和 AE RMS，收到 `done` 后等待约 1 秒再发下一轮。`include_process=true`，同时读取 controller snapshots。设置独立于 hierarchy 的 `DATA_SOURCE`。
+backend 连接 `SIGNALS_WS_URL`（默认 `ws://172.20.114.237:4000/ws`），每轮查询最近 10 秒的 vibration XYZ 和 AE RMS，收到 `done` 后等待约 2 秒（`SIGNALS_POLL_SECONDS`，默认 2）再发下一轮。`include_process=true`，同时读取 controller snapshots。设置独立于 hierarchy 的 `DATA_SOURCE`。
 
 - `signals` 事件：`machine_id / start / end / t_max / channels`。每个 channel 为 `channel / method=m4 / bucket_ms / points`，point 为 `t / min / max / first / last`。
 - `status` 事件：`state=connecting|live|stale|empty|unavailable`。有数据时包含 `dataTime / ageSeconds`。默认距当前时间超过 10 秒或超过 10 秒未变化标记 stale。

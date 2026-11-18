@@ -62,10 +62,14 @@ export function qualityTrendFromHistory(
   );
 }
 
-/** Latest prediction → Selected Balloon Detail values (confidence/pass probability are mock estimates). */
+/**
+ * Latest prediction → Selected Balloon Detail values (confidence/pass probability are mock estimates).
+ * `lastQcValue` is the controller's last measured value for this balloon (null/undefined = none yet).
+ */
 export function qualityPredictionFromHistory(
   history: readonly QualityHistoryPoint[],
   balloon: Spec & { id: string },
+  lastQcValue?: number | null,
 ): BalloonPrediction | null {
   const latest = [...history].reverse().find((point) => typeof point.quality === "number");
   if (!latest || typeof latest.quality !== "number") return null;
@@ -79,6 +83,6 @@ export function qualityPredictionFromHistory(
     marginUnit: balloon.unit === "μm" ? "μm" : "mm",
     passProbability:
       margin < 0 ? 0.1 : Math.min(0.99, 0.5 + 0.49 * Math.min(1, margin / (span * 0.5))),
-    lastQcValue: null,
+    lastQcValue: typeof lastQcValue === "number" && Number.isFinite(lastQcValue) ? lastQcValue : null,
   };
 }

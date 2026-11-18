@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: float = Field(default=10, gt=0, le=120)
     signals_ws_url: str = "ws://172.20.114.237:4000/ws"
     signals_machine_id: str = "Makino_01"
-    signals_poll_seconds: float = Field(default=1, ge=0.2, le=60)
+    signals_poll_seconds: float = Field(default=2, ge=0.2, le=60)
     signals_window_ms: int = Field(default=10000, ge=1, le=300000)
     signals_stale_seconds: float = Field(default=10, ge=1)
     tool_wear_db_url: SecretStr = SecretStr("")
