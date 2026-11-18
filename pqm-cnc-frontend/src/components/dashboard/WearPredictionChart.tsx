@@ -52,14 +52,20 @@ export function WearPredictionChart({
     ...shown.flatMap(item => measuredShown.flatMap(m => (m[item.key] === null ? [] : [m[item.key] as number]))),
   ];
   const dataMax = Math.max(0.05, ...values);
+  const dataMin = values.length ? Math.min(...values) : 0;
   // The default threshold (999) means "not set" and is not drawn, otherwise it would flatten the curves.
   const limits = shown.flatMap(item => {
     const limit = thresholds?.[item.key];
     return limit !== undefined && limit < THRESHOLD_NOT_SET ? [{ ...item, limit }] : [];
   });
   const unsetNames = shown.filter(item => !limits.some(limit => limit.key === item.key)).map(item => item.short);
-  const max = Math.max(dataMax, ...limits.map(item => item.limit)) * 1.18;
-  const y = (value: number) => TOP + PLOT_H * (1 - value / max);
+  // Dynamic y range: it always reaches 0 and grows downwards when a value (a measured point can be negative) goes below it.
+  const dataTop = Math.max(dataMax, ...limits.map(item => item.limit));
+  const dataBottom = Math.min(0, dataMin);
+  const range = dataTop - dataBottom;
+  const max = dataTop + range * 0.18;
+  const min = dataBottom < 0 ? dataBottom - range * 0.08 : 0;
+  const y = (value: number) => TOP + PLOT_H * (1 - (value - min) / (max - min));
 
   const times = [...points.map(p => Date.parse(p.timestampUtc)), ...measuredShown.map(m => m.t)];
   const t0 = Math.min(...times);
@@ -68,7 +74,10 @@ export function WearPredictionChart({
   const indexX = (i: number) => LEFT + (points.length > 1 ? i / (points.length - 1) : 0.5) * PLOT_W;
   const px = (i: number) => (xMode === "time" ? timeX(Date.parse(points[i]!.timestampUtc)) : indexX(i));
   const lineOf = (key: SeriesKey) => points.map((point, i) => `${i ? "L" : "M"}${px(i)},${y(point[key])}`).join(" ");
-  const ticks = [0, max / 3, (2 * max) / 3, max];
+  const step = (max - min) / 3;
+  const showZero = min < 0;
+  // With negative values a dedicated 0 line is drawn; ticks too close to it are dropped.
+  const ticks = [min, min + step, min + 2 * step, max].filter(value => !showZero || Math.abs(value) > (max - min) * 0.06);
   const hovered = hover !== null ? points[hover] : undefined;
   const label = (point: WearPrediction, i: number) => `#${point.index ?? i + 1}`;
   const empty = points.length === 0 && measuredShown.length === 0;
@@ -113,6 +122,10 @@ export function WearPredictionChart({
               <line x1={LEFT} x2={LEFT + PLOT_W} y1={y(value)} y2={y(value)} stroke="#243141" />
               <text x={LEFT - 7} y={y(value) + 4} textAnchor="end" fontSize="10" fill="#8fa3b5">{value.toFixed(2)}</text>
             </g>)}
+            {showZero && <g data-testid="zero-line">
+              <line x1={LEFT} x2={LEFT + PLOT_W} y1={y(0)} y2={y(0)} stroke="#4b6074" />
+              <text x={LEFT - 7} y={y(0) + 4} textAnchor="end" fontSize="10" fill="#c6d7e4">0.00</text>
+            </g>}
             {visible.diameter && points.length > 1 && (
               <path d={`${lineOf("diameter")} L${px(points.length - 1)},${TOP + PLOT_H} L${px(0)},${TOP + PLOT_H} Z`} fill={`url(#${fillId})`} />
             )}

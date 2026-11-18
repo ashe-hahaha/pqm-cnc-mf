@@ -11,7 +11,7 @@ import { useWearHistory } from "@/lib/useWearHistory";
 import { WearPredictionChart, type MeasuredWear } from "./WearPredictionChart";
 import { toolKey, toolLabel } from "@/lib/toolNumber";
 import { WearEventLog, type WearEvent } from "./WearEventLog";
-import { WearAlertForm, type WearAlertSnapshot } from "./WearAlertDemo";
+import { WearAlertForm, requestWearRefresh, type WearAlertSnapshot } from "./WearAlertDemo";
 
 const DEFAULT_TOOL = "25";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -103,20 +103,33 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
     return () => clearTimeout(timer);
   }, []);
 
-  function changeDate(field: "start" | "end", value: string) {
-    const next = { ...dates, [field]: value };
-    setDates(next);
+  /** Validate a date range and make it the active query range. Returns false (and shows why) when it is invalid. */
+  function applyDates(next: { start: string; end: string }) {
     if (!next.start || !next.end || next.end < next.start) {
       setRangeError("Choose a start date on or before the end date.");
-      return;
+      return false;
     }
     const nextBounds = dateBounds(next.start, next.end);
     if (Date.parse(nextBounds.end) - Date.parse(nextBounds.start) > HISTORY_DAYS * DAY_MS) {
       setRangeError("Choose a range of up to 7 days.");
-      return;
+      return false;
     }
     setRangeError(null);
     setBounds(nextBounds);
+    return true;
+  }
+
+  function changeDate(field: "start" | "end", value: string) {
+    const next = { ...dates, [field]: value };
+    setDates(next);
+    applyDates(next);  // a valid new range is requested once
+  }
+
+  /** Request the history again for the dates currently shown, and re-read the prediction snapshot. */
+  function refresh() {
+    if (!applyDates(dates)) return;
+    history.reload();
+    requestWearRefresh();
   }
 
   function resizeColumns(kind: "tools" | "diameter" | "history", delta: number) {
@@ -228,6 +241,10 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
                   <input aria-label="Wear history end date (UTC)" type="date" value={dates.end}
                     onChange={event => changeDate("end", event.target.value)}
                     className="min-w-0 rounded border border-[#314254] bg-[#0c1722] px-1 py-1 text-[#c6d7e4]" />
+                  <button type="button" onClick={refresh} disabled={history.fetching} aria-label="Refresh wear history"
+                    className="shrink-0 rounded border border-[#385064] px-2 py-1 text-[10px] text-[#a5d8fa] hover:bg-[#152738] disabled:opacity-50">
+                    {history.fetching ? "Refreshing…" : "Refresh"}
+                  </button>
                 </div>
               }>
                 {rangeError && <p role="alert" className="text-xs text-amber-400">{rangeError}</p>}

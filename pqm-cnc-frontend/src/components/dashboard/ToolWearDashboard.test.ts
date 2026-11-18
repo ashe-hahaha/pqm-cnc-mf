@@ -43,8 +43,9 @@ const historyState = vi.hoisted(() => ({ data: {
     { timestamp: "2026-11-04T00:10:00Z", timestampEpoch: 1793751000000, toolNo: null, xWearMm: -0.1, zWearMm: 0.2, xSegment: 0, zSegment: 0 },
     { timestamp: "2026-11-04T00:20:00Z", timestampEpoch: 1793751600000, toolNo: null, xWearMm: 0, zWearMm: 0.3, xSegment: 0, zSegment: 0 },
   ],
-}, error: null as string | null, loading: false, discoveredTools: ["167", "unknown"] }));
-vi.mock("@/lib/useWearHistory", () => ({ useWearHistory: () => historyState }));
+}, error: null as string | null, loading: false, fetching: false, reload: vi.fn(), discoveredTools: ["167", "unknown"] }));
+const historyCalls = vi.hoisted(() => [] as unknown[][]);
+vi.mock("@/lib/useWearHistory", () => ({ useWearHistory: (...args: unknown[]) => { historyCalls.push(args); return historyState; } }));
 let host: HTMLDivElement;
 let root: Root;
 beforeEach(async () => {
@@ -81,10 +82,10 @@ it("shows both health outputs and separate trend charts without offset or feedba
   expect(host.querySelector("#wear-scenario")).toBeNull();
 });
 
-it("shows history errors while retaining the last successful charts", async () => {
+it("keeps the last successful charts on a history error without announcing it", async () => {
   historyState.error = "History request failed (502)";
   await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
-  expect(host.textContent).toContain("Showing last successful data");
+  expect(host.textContent).not.toContain("History request failed");
   expect(host.querySelector('svg[aria-label^="Predicted wear history"]')).not.toBeNull();
   historyState.error = null;
 });
@@ -114,4 +115,30 @@ it("shows the controller's measured values as markers on the predicted wear hist
   expect(chart.getAttribute("aria-label")).toContain("2 measured");
   // Two history records, each with a diameter (X) and a length (Z) value.
   expect([...chart.querySelectorAll("title")].filter(title => title.textContent?.startsWith("Measured "))).toHaveLength(4);
+});
+
+it("refreshes the history on demand with the dates currently chosen, without polling", async () => {
+  vi.setSystemTime(new Date("2026-11-04T12:00:00Z"));
+  await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
+  await act(async () => vi.advanceTimersByTimeAsync(10));       // default range: the last 7 days up to today
+  vi.mocked(historyState.reload).mockClear();
+  const button = () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh wear history"]')!;
+  expect(button().textContent).toBe("Refresh");
+
+  const end = host.querySelector<HTMLInputElement>('input[aria-label="Wear history end date (UTC)"]')!;
+  const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => { setValue.call(end, "2026-11-03"); end.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => button().click());
+  expect(historyState.reload).toHaveBeenCalledTimes(1);
+  const [, start, until] = historyCalls.at(-1)!;
+  expect(String(start)).toBe("2026-10-29T00:00:00.000Z");
+  expect(String(until)).toBe("2026-11-04T00:00:00.000Z");        // the new end date (exclusive next day)
+
+  await act(async () => vi.advanceTimersByTimeAsync(60_000));
+  expect(historyState.reload).toHaveBeenCalledTimes(1);           // nothing else triggers a request
+
+  await act(async () => { setValue.call(end, "2026-10-01"); end.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => button().click());
+  expect(host.textContent).toContain("Choose a start date on or before the end date.");
+  expect(historyState.reload).toHaveBeenCalledTimes(1);           // an invalid range is not requested
 });
