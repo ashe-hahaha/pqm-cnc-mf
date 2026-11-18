@@ -58,7 +58,7 @@ export function ProcessContextPanel({
         </span>
       }
     >
-      <p className="mb-2 text-[10px] text-[#8fa3b5]">Controller · {status} · machine-wide</p>
+      <p className="mb-2 text-[10px] text-[#8fa3b5]">Controller{status === "live" ? " · live" : ""} · machine-wide</p>
 
         <ul className="space-y-0">
           {METRICS.map((m) => {

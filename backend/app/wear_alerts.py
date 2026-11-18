@@ -27,7 +27,7 @@ EVENTS_RETURNED = 100  # events included in the snapshot
 EVENTS_KEPT = 1000  # events retained in the database
 NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
 NC_COOLDOWN_S = 10  # minimum time between automatic triggers
-NC_RANGE_LOW, NC_RANGE_HIGH = 64, 75  # first entry into this range (inclusive) also triggers
+NC_RANGE_LOW, NC_RANGE_HIGH = 73, 74  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 
 
@@ -208,7 +208,7 @@ class WearAlerts:
             self.notify_listeners()
 
     def start_auto_prediction(self, previous, current, kind="start"):
-        """Start one automatic prediction. kind: "start" (trigger value), "range" (entered 64-75) or "fallback".
+        """Start one automatic prediction. kind: "start" (trigger value), "range" (entered 73-74) or "fallback".
 
         All kinds share the prediction-running guard and the cooldown. A "start" trigger arms the fallback timer,
         a "range" trigger cancels it.
@@ -237,7 +237,7 @@ class WearAlerts:
         task.add_done_callback(self.background.discard)
 
     def arm_fallback(self, value):
-        """After a "start" trigger: if no 64-75 trigger follows within the configured time, trigger once more."""
+        """After a "start" trigger: if no 73-74 trigger follows within the configured time, trigger once more."""
         self.cancel_fallback()
         seconds = self.settings.tool_wear_nc_fallback_seconds
         if seconds > 0:

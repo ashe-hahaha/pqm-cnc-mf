@@ -62,8 +62,8 @@ To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_AL
 页面打开（有 `/api/signals/stream` 连接）期间，后端检查 controller `process` 行的 `nc_line` 字段，满足下面任一条件时自动执行一次与手动 Trigger 相同的预测流程（事件详情显示 `NC line x → 29`）：
 
 - **触发值**：值从别的值（含 null）变为触发值，默认 `29`（逗号分隔，可写多个），用 `TOOL_WEAR_NC_TRIGGER_VALUES` 修改。
-- **区间触发**：值首次进入 64–75（含两端，常量 `NC_RANGE_LOW` / `NC_RANGE_HIGH`）时触发；已在区间内变化（64 → 65 → 70）不重复触发，离开区间再进入才再次触发。
-- **保底触发**：触发值（29）触发后开始计时，`TOOL_WEAR_NC_FALLBACK_SECONDS` 秒（默认 120，`0` 关闭）内如果没有因进入 64–75 而触发，就自动再触发一次（事件详情显示 `NC line fallback · ...`）；区间触发会取消保底，29 再次触发会重新计时，重置 demo 和服务关闭时也会取消。
+- **区间触发**：值首次进入 73–74（含两端，常量 `NC_RANGE_LOW` / `NC_RANGE_HIGH`）时触发；已在区间内变化（73 → 74）不重复触发，离开区间再进入才再次触发。
+- **保底触发**：触发值（29）触发后开始计时，`TOOL_WEAR_NC_FALLBACK_SECONDS` 秒（默认 120，`0` 关闭）内如果没有因进入 73–74 而触发，就自动再触发一次（事件详情显示 `NC line fallback · ...`）；区间触发会取消保底，29 再次触发会重新计时，重置 demo 和服务关闭时也会取消。
 - 字段名固定为 `nc_line`（`app/wear_alerts.py` 的 `NC_LINE_FIELD`）。
 - 页面刚打开后的第一批数据只记录当前值，不触发；自动触发之间至少间隔 10 秒（触发值、区间、保底三种触发共用同一个冷却，保底触发后也进入冷却）；预测进行中不重复触发，被冷却挡掉的触发直接丢弃、不补发。
 - 只按 `timestamp` 比上次更新的行判断，重叠窗口和数据库停写时重复返回的旧行不会重复触发。

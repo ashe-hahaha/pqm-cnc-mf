@@ -31,7 +31,7 @@ it("shows the picture, keeps it when a refresh fails, and polls one request at a
   expect(String(fetchMock.mock.calls[0][0])).toContain("/api/cctv/snapshot");
 
   await act(async () => { await vi.advanceTimersByTimeAsync(1600); });
-  expect(host.querySelector("[role=status]")?.textContent).toBe("Unavailable · retrying");
+  expect(host.querySelector("[role=status]")?.textContent).toBe("");  // failures are not announced
   expect(host.querySelector("img")).not.toBeNull();  // the last picture stays visible
 
   await act(async () => { await vi.advanceTimersByTimeAsync(1600); });

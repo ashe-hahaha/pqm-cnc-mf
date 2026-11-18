@@ -9,11 +9,8 @@ const labels: Record<string, string> = {
   "spindle.vibration_x": "Vibration · X", "spindle.vibration_y": "Vibration · Y",
   "spindle.vibration_z": "Vibration · Z", "ae.rms": "AE RMS",
 };
-const states: Record<string, string> = {
-  connecting: "Connecting…", live: "Live", stale: "Data not updating / delayed",
-  empty: "No signal samples", unavailable: "Source unavailable · retrying",
-  reconnecting: "Connection lost · reconnecting", paused: "Paused while page is hidden",
-};
+// Only healthy states are shown on the dashboard; stale / empty / unavailable / reconnecting / paused stay silent.
+const states: Record<string, string> = { connecting: "Connecting…", live: "Live" };
 
 /** M4 envelope: bucket extrema are not fabricated raw samples. Units await upstream confirmation. */
 function Envelope({ wave, batch }: { wave: Wave; batch: Batch }) {
@@ -81,7 +78,7 @@ export function LiveSignalScopes() {
   return <div className="mt-3 border-t border-[#2a3a4a]/70 pt-3">
     <div className="flex flex-wrap justify-between gap-2 text-[10px] text-[#8fa3b5]">
       <span>Vibration &amp; AE intensity · {batch?.machine_id ?? "Machine signals"}</span>
-      <span role="status" className={state === "live" ? "text-emerald-400" : "text-amber-400"}>{states[state] ?? state}</span>
+      <span role="status" className={state === "live" ? "text-emerald-400" : "text-[#8fa3b5]"}>{states[state] ?? ""}</span>
     </div>
     <label className="my-2 flex justify-between gap-2 text-xs text-[#8fa3b5]">Signal channel
       <select aria-label="Signal channel" value={selected} onChange={e => setSelected(e.target.value)} className="rounded border border-[#314254] bg-[#0c1722] text-[#c6d7e4]">

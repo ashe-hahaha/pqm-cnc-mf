@@ -54,9 +54,9 @@ class Settings(BaseSettings):
     tool_wear_alert_temi_url: str = ""
     tool_wear_alert_temi_token: SecretStr = SecretStr("")
     # Controller NC line values (comma separated) that start a prediction when the line changes to one of them
-    # (the field name is fixed in wear_alerts.NC_LINE_FIELD). Entering 64-75 also triggers (wear_alerts.NC_RANGE_*).
+    # (the field name is fixed in wear_alerts.NC_LINE_FIELD). Entering 73-74 also triggers (wear_alerts.NC_RANGE_*).
     tool_wear_nc_trigger_values: str = "29"
-    # After a trigger value fires, trigger once more if no 64-75 trigger follows within this many seconds (0 = off).
+    # After a trigger value fires, trigger once more if no 73-74 trigger follows within this many seconds (0 = off).
     tool_wear_nc_fallback_seconds: float = Field(default=120, ge=0)
     # Machine CCTV: still pictures from the Hikvision NVR (empty host = disabled).
     cctv_nvr_host: str = ""

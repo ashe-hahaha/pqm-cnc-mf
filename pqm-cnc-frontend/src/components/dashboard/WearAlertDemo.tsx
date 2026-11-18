@@ -251,7 +251,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
       )}
       {!settings && snapshot?.ncWatch && (
         <p className="mt-2 text-xs text-[#8296a8]" data-testid="nc-watch">
-          NC line watch: {snapshot.ncWatch.running ? "running" : "waiting for the signal stream"}
+          NC line watch: {snapshot.ncWatch.running ? "running" : "standby"}
           {` · ${snapshot.ncWatch.field} = ${snapshot.ncWatch.value ?? "–"} · auto-trigger when it becomes ${snapshot.ncWatch.triggerValues.join(" or ")}`}
           {snapshot.ncWatch.rangeValues ? ` or first enters ${snapshot.ncWatch.rangeValues[0]}–${snapshot.ncWatch.rangeValues[1]}` : ""}
           {snapshot.ncWatch.fallbackSeconds ? ` · fallback ${snapshot.ncWatch.fallbackSeconds} s${snapshot.ncWatch.fallbackPending ? " (armed)" : ""}` : ""}

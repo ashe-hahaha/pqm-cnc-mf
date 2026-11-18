@@ -50,7 +50,7 @@ it("retains the last image during disconnect and refreshes latest on reconnect",
   const source = FakeSource.instances[0];
   await act(async () => source.send("image", image(1)));
   await act(async () => source.onerror?.());
-  expect(host.textContent).toContain("Connection lost");
+  expect(host.textContent).not.toContain("Connection lost");  // disconnects are not announced
   expect(host.querySelector("img")).not.toBeNull();
   vi.mocked(fetch).mockResolvedValueOnce({ ok: true, json: async () => ({ image: image(3), status: { state: "connected" } }) } as Response);
   await act(async () => source.onopen?.());

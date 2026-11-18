@@ -67,10 +67,10 @@ export function CctvBlock({ title = "Machine CCTV · V61", streamUrl = process.e
 
   const capturedMs = frame?.capturedAt ? new Date(frame.capturedAt).getTime() : NaN;
   const stale = Number.isFinite(capturedMs) && now - capturedMs > STALE_MS;
-  const status = videoLive ? "Live video" : failed ? "Unavailable · retrying" : !frame ? "Connecting…" : stale ? "Stale" : "Live";
-  const statusColor = !videoLive && (failed || stale) ? "text-amber-400" : "text-[#8296a8]";
+  // Failures and stale pictures are not announced on the dashboard (demo); the last picture simply stays.
+  const status = videoLive ? "Live video" : failed || (frame && stale) ? "" : !frame ? "Connecting…" : "Live";
   return <>
-    <Panel title={title} titleRight={<span role="status" className={`text-[10px] ${statusColor}`}>{status}</span>}>
+    <Panel title={title} titleRight={<span role="status" className="text-[10px] text-[#8296a8]">{status}</span>}>
       <div className="relative flex min-h-[180px] flex-1 items-center justify-center overflow-hidden rounded-lg border border-dashed border-[#385064] bg-[#0a141e]">
         <video ref={videoRef} muted playsInline autoPlay aria-label="Machine CCTV live video"
           className={`absolute inset-0 h-full w-full object-cover ${videoLive ? "" : "hidden"}`} />
@@ -78,11 +78,11 @@ export function CctvBlock({ title = "Machine CCTV · V61", streamUrl = process.e
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={frame.url} alt="Machine CCTV live picture" className="h-full w-full object-cover" />
         </button> : <div className="p-6 text-center"><span className="text-3xl text-[#6294b3]">▣</span>
-          <p className="mt-3 text-sm text-[#bbcfde]">{failed ? "CCTV picture unavailable" : "Waiting for CCTV picture…"}</p></div>}
+          <p className="mt-3 text-sm text-[#bbcfde]">Waiting for CCTV picture…</p></div>}
       </div>
       <div className="mt-2 shrink-0 text-[11px] text-[#8296a8]">
         {videoLive ? <p>Live video</p> : frame && Number.isFinite(capturedMs)
-          ? <p>Updated <time dateTime={new Date(capturedMs).toISOString()}>{new Date(capturedMs).toLocaleTimeString()}</time>{failed ? " · last picture shown" : ""}</p>
+          ? <p>Updated <time dateTime={new Date(capturedMs).toISOString()}>{new Date(capturedMs).toLocaleTimeString()}</time></p>
           : <p>The picture refreshes about every 1.5 seconds.</p>}
       </div>
     </Panel>

@@ -232,7 +232,6 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
               }>
                 {rangeError && <p role="alert" className="text-xs text-amber-400">{rangeError}</p>}
                 {history.loading && <p className="text-xs text-[#8296a8]">Loading measured history…</p>}
-                {history.error && <p role="alert" className="text-xs text-amber-400">Measured history: {history.error}{history.data ? " · Showing last successful data" : ""}</p>}
                 <WearPredictionChart points={predictions} thresholds={wearDemo?.thresholds} measured={measured} xMode="time"
                   emptyMessage="No prediction or measured value in this range." />
                 <p className="shrink-0 text-[10px] text-[#70889c]">
