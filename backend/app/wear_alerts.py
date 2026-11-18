@@ -27,6 +27,7 @@ EVENTS_RETURNED = 100  # events included in the snapshot
 EVENTS_KEPT = 1000  # events retained in the database
 NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
 NC_COOLDOWN_S = 10  # minimum time between automatic triggers
+NC_RANGE_LOW, NC_RANGE_HIGH = 64, 75  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 
 
@@ -62,9 +63,29 @@ def nc_trigger_values(settings: Settings):
     return [value for value in dict.fromkeys(values) if value is not None]
 
 
-def nc_line_rising(previous, current, triggers):
-    """Auto-trigger rule (kept separate so it is easy to replace): the line changes to any trigger value."""
-    return current in triggers and previous != current
+def nc_in_range(value):
+    """True when a normalised NC line value is a number inside NC_RANGE_LOW..NC_RANGE_HIGH (inclusive)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return NC_RANGE_LOW <= number <= NC_RANGE_HIGH
+
+
+def nc_trigger_kind(previous, current, triggers):
+    """Auto-trigger rule (kept separate so it is easy to replace).
+
+    "start": the line changes to a trigger value (default 29).
+    "range": the line enters NC_RANGE_LOW..NC_RANGE_HIGH from outside it (moving inside the range does not count).
+    None: no trigger.
+    """
+    if previous == current:
+        return None
+    if current in triggers:
+        return "start"
+    if nc_in_range(current) and not nc_in_range(previous):
+        return "range"
+    return None
 
 
 class WearAlerts:
@@ -74,6 +95,7 @@ class WearAlerts:
         self.settings = settings
         self.nc = {"value": None, "seenAt": None, "lastTriggerAt": None}
         self.nc_last_trigger = None  # monotonic time of the last automatic trigger
+        self.nc_fallback: asyncio.Task | None = None  # pending fallback trigger armed by a "start" trigger
         self.prediction_running = False
         self.background: set[asyncio.Task] = set()
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
@@ -147,6 +169,9 @@ class WearAlerts:
         seen = self.nc["seenAt"]
         running = seen is not None and time.monotonic() - seen < max(5, 3 * self.settings.signals_poll_seconds)
         return {"field": NC_LINE_FIELD, "triggerValues": nc_trigger_values(self.settings),
+                "rangeValues": [NC_RANGE_LOW, NC_RANGE_HIGH],
+                "fallbackSeconds": self.settings.tool_wear_nc_fallback_seconds,
+                "fallbackPending": self.nc_fallback is not None,
                 "running": running, "value": self.nc["value"], "lastTriggerAt": self.nc["lastTriggerAt"]}
 
     def on_signals(self, machine, batch, state):
@@ -161,13 +186,14 @@ class WearAlerts:
                       key=lambda row: row["timestamp"])
         first = "last_timestamp" not in state
         changed = False
-        fire = None
+        fires = []
         for row in rows:
             if not first and row["timestamp"] <= state["last_timestamp"]:
                 continue  # windows overlap and a stopped database repeats old rows
             current = normalize_nc(row.get(NC_LINE_FIELD))
-            if not first and nc_line_rising(state["value"], current, triggers):
-                fire = (state["value"], current)
+            kind = None if first else nc_trigger_kind(state["value"], current, triggers)
+            if kind:
+                fires.append((state["value"], current, kind))
             if current != state.get("value"):
                 changed = True
             state["value"] = current
@@ -176,25 +202,57 @@ class WearAlerts:
         if state.get("value") != self.nc["value"]:
             self.nc["value"] = state.get("value")
             changed = True
-        if fire:
+        for fire in fires:  # in line order; the shared cooldown lets only the first one through
             self.start_auto_prediction(*fire)
-        elif changed:
+        if not fires and changed:
             self.notify_listeners()
 
-    def start_auto_prediction(self, previous, current):
+    def start_auto_prediction(self, previous, current, kind="start"):
+        """Start one automatic prediction. kind: "start" (trigger value), "range" (entered 64-75) or "fallback".
+
+        All kinds share the prediction-running guard and the cooldown. A "start" trigger arms the fallback timer,
+        a "range" trigger cancels it.
+        """
         now = time.monotonic()
         if not self.settings.tool_wear_demo_enabled or self.prediction_running:
             return
         if self.nc_last_trigger is not None and now - self.nc_last_trigger < NC_COOLDOWN_S:
-            logger.info("NC line trigger ignored (cooldown) %s -> %s", previous, current)
+            logger.info("NC line %s trigger ignored (cooldown) %s -> %s", kind, previous, current)
             return
         self.nc_last_trigger = now
         self.nc["lastTriggerAt"] = datetime.now(timezone.utc).isoformat()
-        logger.info("NC line %s -> %s: starting prediction", previous, current)
-        task = asyncio.create_task(self.run_prediction(
-            MockPrediction(), detail=f"NC line {previous if previous is not None else 'null'} → {current}"))
+        if kind == "fallback":
+            detail = (f"NC line fallback · no {NC_RANGE_LOW}-{NC_RANGE_HIGH} within "
+                      f"{self.settings.tool_wear_nc_fallback_seconds:g} s after {previous}")
+            logger.info("NC line fallback after %s: starting prediction", previous)
+        else:
+            detail = f"NC line {previous if previous is not None else 'null'} → {current}"
+            logger.info("NC line %s -> %s (%s): starting prediction", previous, current, kind)
+            if kind == "start":
+                self.arm_fallback(current)
+            else:
+                self.cancel_fallback()
+        task = asyncio.create_task(self.run_prediction(MockPrediction(), detail=detail))
         self.background.add(task)
         task.add_done_callback(self.background.discard)
+
+    def arm_fallback(self, value):
+        """After a "start" trigger: if no 64-75 trigger follows within the configured time, trigger once more."""
+        self.cancel_fallback()
+        seconds = self.settings.tool_wear_nc_fallback_seconds
+        if seconds > 0:
+            self.nc_fallback = asyncio.create_task(self.fallback_after(seconds, value))
+
+    def cancel_fallback(self):
+        task, self.nc_fallback = self.nc_fallback, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def fallback_after(self, seconds, value):
+        await asyncio.sleep(seconds)
+        self.nc_fallback = None
+        self.start_auto_prediction(value, None, "fallback")
+        self.notify_listeners()
 
     async def run_prediction(self, values: MockPrediction, detail="Mock prediction"):
         """Manual and automatic triggers share this flow: events, prediction, alerts and notifications."""
@@ -419,6 +477,7 @@ class WearAlerts:
                        detail=image["machineId"], event_id=f'{image["captureId"]}:photo')
 
     async def close(self):
+        self.cancel_fallback()
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -461,6 +520,7 @@ async def mock_prediction(request: Request, values: MockPrediction):
 async def reset(request: Request):
     service = enabled_service(request)
     await asyncio.to_thread(service.reset)
+    service.cancel_fallback()  # a pending fallback must not fire into the freshly reset demo
     service.notify_listeners("reset")
     service.notify_listeners()
     return service.snapshot()

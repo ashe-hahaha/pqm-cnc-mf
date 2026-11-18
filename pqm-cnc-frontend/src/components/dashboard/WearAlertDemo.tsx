@@ -29,7 +29,7 @@ type QualityAlert = {
 export type WearAlert = ToolWearAlert | QualityAlert;
 export type QualitySpec = { nominal: number; upperTol: number; lowerTol: number };
 /** Controller NC line watch: the backend starts a prediction when the value changes to one of `triggerValues`. */
-export type NcWatch = { field: string; triggerValues: string[]; running: boolean; value: string | null; lastTriggerAt: string | null };
+export type NcWatch = { field: string; triggerValues: string[]; rangeValues?: [number, number]; fallbackSeconds?: number; fallbackPending?: boolean; running: boolean; value: string | null; lastTriggerAt: string | null };
 export type WearAlertSnapshot = {
   enabled: boolean;
   thresholds: Values;
@@ -253,6 +253,8 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
         <p className="mt-2 text-xs text-[#8296a8]" data-testid="nc-watch">
           NC line watch: {snapshot.ncWatch.running ? "running" : "waiting for the signal stream"}
           {` · ${snapshot.ncWatch.field} = ${snapshot.ncWatch.value ?? "–"} · auto-trigger when it becomes ${snapshot.ncWatch.triggerValues.join(" or ")}`}
+          {snapshot.ncWatch.rangeValues ? ` or first enters ${snapshot.ncWatch.rangeValues[0]}–${snapshot.ncWatch.rangeValues[1]}` : ""}
+          {snapshot.ncWatch.fallbackSeconds ? ` · fallback ${snapshot.ncWatch.fallbackSeconds} s${snapshot.ncWatch.fallbackPending ? " (armed)" : ""}` : ""}
           {snapshot.ncWatch.lastTriggerAt ? ` · last auto trigger ${new Date(snapshot.ncWatch.lastTriggerAt).toLocaleTimeString()}` : ""}
         </p>
       )}

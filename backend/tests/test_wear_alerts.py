@@ -5,6 +5,7 @@ import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 
+from app import wear_alerts
 from app.config import Settings
 from app.wear_alerts import MockPrediction, QualitySpec, WearAlerts, WearValues, mock_prediction
 from app.wear_series import PREDICTION_SERIES
@@ -150,36 +151,37 @@ def batch(*rows):
                         for second, value in rows]}
 
 
-def test_nc_line_watcher_triggers_on_a_change_to_any_trigger_value(tmp_path):
+def test_nc_line_watcher_triggers_on_a_change_to_a_trigger_value(tmp_path):
     async def run():
         _, service = make_service(tmp_path)
         service.PREDICTION_DELAY_S = 0
         machine, state = service.settings.signals_machine_id, {}
         watch = lambda *rows: service.on_signals(machine, batch(*rows), state)
-        assert service.snapshot()["ncWatch"]["triggerValues"] == ["24", "75"]
+        assert service.snapshot()["ncWatch"]["triggerValues"] == ["29"]
 
         watch((1, 20), (2, 20))            # first batch after opening: only recorded
         watch((1, 20), (2, 20), (3, 21))   # overlapping window, a new value that is not a trigger value
-        watch((2, 20), (3, 21), (4, "24"))  # string 24 matches; this one triggers
+        watch((2, 20), (3, 21), (4, "29"))  # string 29 matches; this one triggers
         await asyncio.gather(*service.background)
         assert [item["index"] for item in service.snapshot()["history"]] == [1]
-        assert service.snapshot()["ncWatch"]["value"] == "24"
+        assert service.snapshot()["ncWatch"]["value"] == "29"
         assert service.snapshot()["ncWatch"]["running"] is True
         assert service.snapshot()["ncWatch"]["lastTriggerAt"]
         started = [e for e in service.snapshot()["events"] if e["label"] == "Prediction started"]
-        assert started[0]["detail"] == "NC line 21 → 24"
+        assert started[0]["detail"] == "NC line 21 → 29"
 
-        watch((4, 24), (5, 24), (6, 24))   # staying at 24 does not trigger again
-        watch((4, 24), (5, 24), (6, 24))   # repeated old rows neither
+        watch((4, 29), (5, 29), (6, 29))   # staying at 29 does not trigger again
+        watch((4, 29), (5, 29), (6, 29))   # repeated old rows neither
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 1
 
         service.nc_last_trigger -= 11      # past the cooldown
-        watch((7, 75))                     # 24 -> 75 is a change to the other trigger value
+        watch((7, 75))                     # 29 -> 75 enters the 64-75 range: a second kind of trigger
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 2
         started = [e for e in service.snapshot()["events"] if e["label"] == "Prediction started"]
-        assert started[-1]["detail"] == "NC line 24 → 75"
+        assert started[-1]["detail"] == "NC line 29 → 75"
+        assert service.snapshot()["ncWatch"]["fallbackPending"] is False  # the range trigger cancelled the fallback
 
     asyncio.run(run())
 
@@ -201,23 +203,124 @@ def test_nc_line_watcher_first_batch_cooldown_and_null(tmp_path):
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 1
 
-        service.on_signals(machine, batch((4, 30), (5, 24)), state)  # 10 s cooldown ignores this one (shared by both values)
+        service.on_signals(machine, batch((4, 30), (5, 29)), state)  # 10 s cooldown ignores this one (shared by all triggers)
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 1
 
         service.nc_last_trigger -= 11
-        service.on_signals(machine, batch((6, 30), (7, 24)), state)
+        service.on_signals(machine, batch((6, 30), (7, 29)), state)
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 2
+        service.cancel_fallback()
 
         # Another machine and a different configuration (with spaces, a duplicate and numbers) behave as configured.
-        service.on_signals("Other", batch((8, 30), (9, 24)), {})
+        service.on_signals("Other", batch((8, 30), (9, 29)), {})
         service.settings.tool_wear_nc_trigger_values = " 30 , 31,30"
         assert service.snapshot()["ncWatch"]["triggerValues"] == ["30", "31"]
         service.nc_last_trigger -= 11
         service.on_signals(machine, batch((10, 29), (11, 30.0)), state)
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 3
+
+    asyncio.run(run())
+
+
+def test_nc_range_triggers_only_on_first_entry(tmp_path):
+    async def run():
+        _, service = make_service(tmp_path)
+        service.PREDICTION_DELAY_S = 0
+        machine, state = service.settings.signals_machine_id, {}
+        history = lambda: len(service.snapshot()["history"])
+
+        async def watch(*rows):
+            service.nc_last_trigger = None  # isolate the rule from the cooldown
+            service.on_signals(machine, batch(*rows), state)
+            await asyncio.gather(*service.background)
+
+        await watch((1, 20))                              # first batch: only recorded
+        await watch((2, 63), (3, 76), (4, "abc"))         # just outside the range / not a number: no trigger
+        assert history() == 0
+        await watch((5, 64))                              # first entry (lower bound is inclusive)
+        assert history() == 1
+        await watch((6, 65), (7, 70.0), (8, "75"), (9, 64))  # moving inside the range does not trigger again
+        assert history() == 1
+        await watch((10, 80))                             # leaving does not trigger
+        assert history() == 1
+        await watch((11, "75"))                           # re-entering (upper bound is inclusive) triggers
+        assert history() == 2
+        started = [e for e in service.snapshot()["events"] if e["label"] == "Prediction started"]
+        assert [e["detail"] for e in started] == ["NC line abc → 64", "NC line 80 → 75"]
+
+    asyncio.run(run())
+
+
+def test_nc_fallback_fires_once_after_the_delay_and_enters_cooldown(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0.05)
+        settings, service = make_service(tmp_path)
+        settings.tool_wear_nc_fallback_seconds = 0.2
+        service.PREDICTION_DELAY_S = 0
+        machine, state = settings.signals_machine_id, {}
+        assert service.snapshot()["ncWatch"]["fallbackSeconds"] == 0.2
+
+        service.on_signals(machine, batch((1, 20)), state)
+        service.on_signals(machine, batch((2, 29)), state)  # first trigger arms the fallback
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1
+        assert service.snapshot()["ncWatch"]["fallbackPending"] is True
+        first_trigger = service.nc_last_trigger
+
+        await asyncio.sleep(0.5)                            # no 64-75 within the delay -> second trigger
+        await asyncio.gather(*service.background)
+        snapshot = service.snapshot()
+        assert len(snapshot["history"]) == 2
+        assert snapshot["ncWatch"]["fallbackPending"] is False
+        started = [e for e in snapshot["events"] if e["label"] == "Prediction started"]
+        assert started[-1]["detail"].startswith("NC line fallback")
+        assert service.nc_last_trigger > first_trigger      # the fallback entered the cooldown too
+
+        await asyncio.sleep(0.5)                            # it fires only once
+        assert len(service.snapshot()["history"]) == 2
+
+    asyncio.run(run())
+
+
+def test_nc_fallback_is_cancelled_by_a_range_trigger_and_can_be_disabled(tmp_path, monkeypatch):
+    async def run():
+        monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0.05)
+        settings, service = make_service(tmp_path)
+        settings.tool_wear_nc_fallback_seconds = 0.3
+        service.PREDICTION_DELAY_S = 0
+        machine, state = settings.signals_machine_id, {}
+        status = lambda: service.snapshot()["ncWatch"]["fallbackPending"]
+
+        service.on_signals(machine, batch((1, 20)), state)
+        service.on_signals(machine, batch((2, 29)), state)
+        service.on_signals(machine, batch((3, 64)), state)  # inside the cooldown: ignored, fallback stays armed
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1 and status() is True
+
+        await asyncio.sleep(0.1)                            # cooldown over
+        service.on_signals(machine, batch((4, 20), (5, 70)), state)  # entering the range again triggers and cancels
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 2 and status() is False
+        await asyncio.sleep(0.5)
+        assert len(service.snapshot()["history"]) == 2      # the fallback never fired
+
+        service.cancel_fallback()
+        settings.tool_wear_nc_fallback_seconds = 0          # 0 disables the fallback
+        await asyncio.sleep(0.1)
+        service.on_signals(machine, batch((6, 20), (7, 29)), state)
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 3 and status() is False
+
+        settings.tool_wear_nc_fallback_seconds = 5          # a new start trigger re-arms; reset-like cancel clears it
+        await asyncio.sleep(0.1)
+        service.on_signals(machine, batch((8, 20), (9, 29)), state)
+        await asyncio.gather(*service.background)
+        assert status() is True
+        service.cancel_fallback()
+        assert status() is False
 
     asyncio.run(run())
 
