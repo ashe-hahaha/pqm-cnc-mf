@@ -105,6 +105,7 @@ export function BalloonDetail({
                 ? "N/A"
                 : `${prediction.lastQcValue.toFixed(3)} ${balloon.unit}`
             }
+            note={formatQcTime(prediction.lastQcValue == null ? null : prediction.lastQcAt)}
           />
         </div>
       )}
@@ -253,14 +254,24 @@ function SpecRow({
   );
 }
 
+/** Local date/time of a QC measurement; null when missing or unparsable. */
+function formatQcTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
+}
+
 function Row({
   label,
   value,
+  note,
   emphasis,
   className,
 }: {
   label: string;
   value: string;
+  /** Small second line under the value (e.g. when it was measured). */
+  note?: string | null;
   emphasis?: boolean;
   className?: string;
 }) {
@@ -277,6 +288,7 @@ function Row({
         )}
       >
         {value}
+        {note ? <span className="mt-0.5 block text-[9px] font-normal leading-none text-[#8fa3b5]">{note}</span> : null}
       </dd>
     </div>
   );

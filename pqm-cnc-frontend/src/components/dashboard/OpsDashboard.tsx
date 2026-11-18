@@ -369,9 +369,9 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   );
   const detailPrediction = useMemo(
     () => (isQualityBalloon && inspectBalloon
-      ? qualityPredictionFromHistory(qualityHistory ?? [], inspectBalloon, wearDemo?.lastQc?.value)
+      ? qualityPredictionFromHistory(qualityHistory ?? [], inspectBalloon, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc)
       : inspect?.prediction ?? null),
-    [isQualityBalloon, inspect, inspectBalloon, qualityHistory, wearDemo?.lastQc?.value],
+    [isQualityBalloon, inspect, inspectBalloon, qualityHistory, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc],
   );
   const detailBalloon = useMemo(
     () => (isQualityBalloon && inspectBalloon && detailPrediction

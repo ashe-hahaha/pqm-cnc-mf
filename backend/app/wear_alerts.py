@@ -236,12 +236,22 @@ class WearAlerts:
             logger.info("NC line %s: no valid macro %s value, last QC unchanged", NC_QC_VALUE, QC_MACRO)
             self.log_event("QC not available", TOOL_NO, detail=f"NC line {NC_QC_VALUE} · macro {QC_MACRO} missing or invalid")
             return
-        qc = {"value": value, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
-              "toolNo": row.get("tool_no"), "macro": QC_MACRO}
         with closing(sqlite3.connect(self.path)) as db, db:
+            spec = self.get_quality_spec(db)
+            lsl, usl = spec.nominal - spec.lowerTol, spec.nominal + spec.upperTol
+            in_spec = lsl - 1e-9 <= value <= usl + 1e-9
+            # Demo setting: a measurement outside the B1 tolerance is shown as a fixed passing value instead.
+            masked = not in_spec and self.settings.tool_wear_qc_mask_out_of_spec
+            shown = self.settings.tool_wear_qc_pass_value if masked else value
+            qc = {"value": shown, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
+                  "toolNo": row.get("tool_no"), "macro": QC_MACRO}
             db.execute("INSERT OR REPLACE INTO last_qc VALUES (1, ?)", (json.dumps(qc),))
-        logger.info("NC line %s: last QC (macro %s) = %s mm", NC_QC_VALUE, QC_MACRO, value)
-        self.log_event("QC measured", TOOL_NO, detail=f"Diameter {round(value, 6)} mm · macro {QC_MACRO}")
+        detail = f"Diameter {round(value, 6)} mm · macro {QC_MACRO}"
+        if masked:  # the real value stays visible here (event log / server log), not on the dashboard
+            detail += f" · outside {round(lsl, 6)}–{round(usl, 6)} mm, shown as {shown} mm"
+        logger.info("NC line %s: last QC (macro %s) = %s mm%s", NC_QC_VALUE, QC_MACRO, value,
+                    f", shown as {shown} mm (outside {lsl:g}-{usl:g})" if masked else "")
+        self.log_event("QC measured", TOOL_NO, detail=detail)
         self.notify_listeners()
 
     def start_auto_prediction(self, previous, current, kind="start"):

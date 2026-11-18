@@ -62,6 +62,8 @@ export interface BalloonPrediction {
   marginUnit: "mm" | "μm";
   passProbability: number;
   lastQcValue: number | null;
+  /** When the last QC value was measured (ISO timestamp from the controller), if known. */
+  lastQcAt?: string | null;
 }
 
 /** Recent samples for process-context trend charts (monitoring). */

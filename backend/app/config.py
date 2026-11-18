@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     tool_wear_nc_trigger_values: str = "29"
     # After a trigger value fires, trigger once more if no 73-74 trigger follows within this many seconds (0 = off).
     tool_wear_nc_fallback_seconds: float = Field(default=120, ge=0)
+    # Demo: a QC value (NC line 93, macro 956) outside the B1 tolerance is shown as `tool_wear_qc_pass_value` instead.
+    tool_wear_qc_mask_out_of_spec: bool = True
+    tool_wear_qc_pass_value: float = 18.067
     # Machine CCTV: still pictures from the Hikvision NVR (empty host = disabled).
     cctv_nvr_host: str = ""
     cctv_http_port: int = Field(default=80, ge=1, le=65535)

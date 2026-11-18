@@ -341,32 +341,60 @@ def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path)
         assert last_qc() is None
 
         watch((1, 92, {"956": 9.5}))                       # first batch: only recorded, even if it is 93 later
-        watch((2, 93, {"956": 9.987}), (3, 93, {"956": 9.0}))  # arrival at 93 samples once (first row of the stay)
+        watch((2, 93, {"956": 18.012}), (3, 93, {"956": 18.02}))  # arrival at 93 samples once (first row of the stay)
         await asyncio.gather(*service.background)
-        assert last_qc()["value"] == 9.987 and last_qc()["macro"] == "956"
+        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "956"
         assert last_qc()["timestampUtc"] == "2026-11-12T02:31:02.000Z"
         assert service.snapshot()["history"] == []         # no prediction was started
         assert service.snapshot()["ncWatch"]["fallbackPending"] is False
         labels = [e["label"] for e in service.snapshot()["events"]]
         assert labels == ["QC measured"]
 
-        watch((4, 93, {"956": 8.0}))                       # still at 93: no new sample
-        assert last_qc()["value"] == 9.987
+        watch((4, 93, {"956": 18.03}))                       # still at 93: no new sample
+        assert last_qc()["value"] == 18.012
 
         for i, macros in enumerate(({}, {"955": 1.0}, {"956": None}, {"956": float("nan")}, None, {"956": "x"})):
             watch((10 + 2 * i, 40, {}))
             watch((11 + 2 * i, 93, macros))                # no usable value: last QC stays, a note is logged
-            assert last_qc()["value"] == 9.987
+            assert last_qc()["value"] == 18.012
         assert [e["label"] for e in service.snapshot()["events"]].count("QC not available") == 6
 
         watch((30, 40, {}))
-        watch((31, 93, {"956": 10}))                       # integers are fine; a newer value replaces the old one
-        assert last_qc()["value"] == 10.0
+        watch((31, 93, {"956": 18}))                       # integers are fine; a newer value replaces the old one
+        assert last_qc()["value"] == 18.0
 
         restarted = WearAlerts(service.settings)           # persisted
-        assert restarted.snapshot()["lastQc"]["value"] == 10.0
+        assert restarted.snapshot()["lastQc"]["value"] == 18.0
         service.reset()
         assert service.snapshot()["lastQc"] is None        # Reset demo clears it
+
+    asyncio.run(run())
+
+
+def test_out_of_spec_qc_is_shown_as_the_fixed_passing_value(tmp_path):
+    async def run():
+        settings, service = make_service(tmp_path)
+        machine, state = settings.signals_machine_id, {}
+        seconds = iter(range(1, 100))
+
+        def measure(value):
+            service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)
+            service.on_signals(machine, qc_batch((next(seconds), 93, {"956": value})), state)
+            return service.snapshot()["lastQc"]["value"]
+
+        service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)  # first batch
+        assert measure(18.05) == 18.05                  # inside 18 ± 0.1 (default spec): shown as measured
+        assert measure(18.1) == 18.1 and measure(17.9) == 17.9   # the limits themselves pass
+        assert measure(18.2) == 18.067                  # above USL: the fixed passing value
+        assert measure(17.5) == 18.067                  # below LSL
+        details = [e["detail"] for e in service.snapshot()["events"] if e["label"] == "QC measured"]
+        assert "18.2 mm" in details[-2] and "shown as 18.067 mm" in details[-2]  # the real value stays in the event log
+        assert "shown as" not in details[0]
+
+        service.set_quality_spec(QualitySpec(nominal=18.2, upperTol=0.05, lowerTol=0.05))  # follows the stored tolerance
+        assert measure(18.2) == 18.2
+        settings.tool_wear_qc_mask_out_of_spec = False  # the demo substitution can be switched off
+        assert measure(19.0) == 19.0
 
     asyncio.run(run())
 

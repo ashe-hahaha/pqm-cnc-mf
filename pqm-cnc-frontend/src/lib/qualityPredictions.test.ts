@@ -41,6 +41,9 @@ describe("quality predictions from backend history", () => {
     expect(qualityPredictionFromHistory([at(0.008, 9)], b1, null)!.lastQcValue).toBeNull();
     expect(qualityPredictionFromHistory([at(0.008, 9)], b1, Number.NaN)!.lastQcValue).toBeNull();
     expect(qualityPredictionFromHistory([at(0.008, 9)], b1, 0.012)!.lastQcValue).toBe(0.012);
+    const stamped = qualityPredictionFromHistory([at(0.008, 9)], b1, 0.012, "2026-11-12T02:31:02.000Z")!;
+    expect(stamped.lastQcAt).toBe("2026-11-12T02:31:02.000Z");
+    expect(qualityPredictionFromHistory([at(0.008, 9)], b1, null, "2026-11-12T02:31:02.000Z")!.lastQcAt).toBeNull();
   });
 
   it("follows a changed tolerance", () => {
