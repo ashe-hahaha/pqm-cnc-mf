@@ -44,12 +44,12 @@ it("requests once without polling, and again only on reload() or when the parame
 it("reports fetching while a request is in flight and keeps the old data during a refresh", async () => {
   await act(async () => root.render(React.createElement(View)));
   expect(latest.fetching).toBe(false);
-  let finish!: (value: unknown) => void;
-  vi.mocked(fetch).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }) as Promise<Response>);
+  let finish!: (value: Response) => void;
+  vi.mocked(fetch).mockReturnValueOnce(new Promise<Response>(resolve => { finish = resolve; }));
   await act(async () => latest.reload());
   expect(latest.fetching).toBe(true);
   expect(latest.data).not.toBeNull();              // previous result stays visible
-  await act(async () => finish({ ok: true, json: async () => result }));
+  await act(async () => finish({ ok: true, json: async () => result } as Response));
   expect(latest.fetching).toBe(false);
 });
 

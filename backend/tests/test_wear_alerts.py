@@ -103,6 +103,7 @@ def test_kafka_publisher_sends_consumer_contract(tmp_path, monkeypatch):
 def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
     async def run():
         _, service = make_service(tmp_path)
+        service.PREDICTION_DELAY_S = 0.2  # a visible gap between "started" and the result
         service.set_thresholds(WearValues(diameter=0.1, length=999))
         listener = asyncio.Queue()
         service.listeners.add(listener)
@@ -397,6 +398,22 @@ def test_out_of_spec_qc_is_shown_as_the_fixed_passing_value(tmp_path):
         assert measure(19.0) == 19.0
 
     asyncio.run(run())
+
+
+def test_prediction_delay_comes_from_the_setting(tmp_path):
+    settings, service = make_service(tmp_path)
+    assert settings.tool_wear_prediction_delay_seconds == 0 and service.PREDICTION_DELAY_S == 0  # default: immediate
+
+    async def run(delay):
+        settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path), tool_wear_demo_enabled=True,
+                            tool_wear_prediction_delay_seconds=delay)
+        service = WearAlerts(settings)
+        started = asyncio.get_running_loop().time()
+        await service.run_prediction(MockPrediction())
+        return asyncio.get_running_loop().time() - started
+
+    assert asyncio.run(run(0)) < 0.15
+    assert asyncio.run(run(0.3)) >= 0.29
 
 
 def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):

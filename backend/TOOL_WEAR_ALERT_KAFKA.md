@@ -64,6 +64,7 @@ To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_AL
 - **触发值**：值从别的值（含 null）变为触发值，默认 `29`（逗号分隔，可写多个），用 `TOOL_WEAR_NC_TRIGGER_VALUES` 修改。
 - **区间触发**：值首次进入 73–74（含两端，常量 `NC_RANGE_LOW` / `NC_RANGE_HIGH`）时触发；已在区间内变化（73 → 74）不重复触发，离开区间再进入才再次触发。
 - **保底触发**：触发值（29）触发后开始计时，`TOOL_WEAR_NC_FALLBACK_SECONDS` 秒（默认 120，`0` 关闭）内如果没有因进入 73–74 而触发，就自动再触发一次（事件详情显示 `NC line fallback · ...`）；区间触发会取消保底，29 再次触发会重新计时，重置 demo 和服务关闭时也会取消。
+- 预测的模拟耗时（`Prediction started` 到 `Prediction completed` 之间）由 `TOOL_WEAR_PREDICTION_DELAY_SECONDS` 设置，默认 `0`（立即出结果），手动和自动触发共用。
 - 字段名固定为 `nc_line`（`app/wear_alerts.py` 的 `NC_LINE_FIELD`）。
 - **QC 采样（93）**：`nc_line` 变为 `93` 时不启动预测，只读取同一行 `macros["956"]`（实测直径，mm；`macros` 为字符串宏号 → 浮点数的对象，没有时是 `{}`），保存为 B1 的 Last QC（常量 `NC_QC_VALUE` / `QC_MACRO`）。值缺失或不是有限数字时 Last QC 保持不变，并在 event log 记一条 `QC not available`。值写入 `wear-alerts.sqlite3` 的 `last_qc` 表，重启后保留，Reset demo 会清除；通过 `GET /api/tool-wear/demo` 的 `lastQc` 字段返回，前端显示在 Selected Balloon Detail 的 Last QC（仅 B1）。**演示设置**：实测直径超出 B1 公差（后端 `quality_spec`，默认 18 ± 0.1）时，Last QC 不显示真实值，而显示固定的合格值 `TOOL_WEAR_QC_PASS_VALUE`（默认 18.067）；真实值只记录在 event log 和后端日志里。`TOOL_WEAR_QC_MASK_OUT_OF_SPEC=false` 可关闭这个替换。
 - 页面刚打开后的第一批数据只记录当前值，不触发；自动触发之间至少间隔 10 秒（触发值、区间、保底三种触发共用同一个冷却，保底触发后也进入冷却）；预测进行中不重复触发，被冷却挡掉的触发直接丢弃、不补发。

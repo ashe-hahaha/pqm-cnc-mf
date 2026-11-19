@@ -101,10 +101,10 @@ def qc_from_row(row):
 
 
 class WearAlerts:
-    PREDICTION_DELAY_S = 3
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.PREDICTION_DELAY_S = settings.tool_wear_prediction_delay_seconds  # simulated prediction time
         self.nc = {"value": None, "seenAt": None, "lastTriggerAt": None}
         self.nc_last_trigger = None  # monotonic time of the last automatic trigger
         self.nc_fallback: asyncio.Task | None = None  # pending fallback trigger armed by a "start" trigger
@@ -306,7 +306,8 @@ class WearAlerts:
         self.prediction_running = True
         try:
             self.log_event("Prediction started", TOOL_NO, detail=detail)
-            await asyncio.sleep(self.PREDICTION_DELAY_S)
+            if self.PREDICTION_DELAY_S > 0:
+                await asyncio.sleep(self.PREDICTION_DELAY_S)
             result = await asyncio.to_thread(self.record, values)
             self.log_prediction_results(result)
             self.notify_listeners()
