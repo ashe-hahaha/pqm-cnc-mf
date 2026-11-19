@@ -6,6 +6,8 @@ import sqlite3
 from contextlib import closing
 from types import SimpleNamespace
 
+from fastapi import HTTPException
+
 from app import wear_alerts
 from app.config import Settings
 from app.wear_alerts import MockPrediction, QualitySpec, WearAlerts, WearValues, mock_prediction
@@ -17,6 +19,11 @@ def make_service(tmp_path):
                         tool_wear_demo_enabled=True, tool_wear_alert_kafka_enabled=True,
                         tool_wear_alert_temi_enabled=False)
     return settings, WearAlerts(settings)
+
+
+def confirm(service, alert):
+    """The operator chose "Yes, laser inspection" for this alert (this is what queues the Kafka notification)."""
+    return service.start_inspection(alert["alertId"])
 
 
 def test_predictions_cycle_through_series_and_persist_cursor(tmp_path):
@@ -60,6 +67,11 @@ def test_every_exceeding_prediction_alerts_and_enqueues(tmp_path):
     tool_wear_alerts = [item for item in snapshot["alerts"] if item["kind"] == "tool_wear"]
     assert tool_wear_alerts[0]["alertId"] == second["alertId"]
     with closing(sqlite3.connect(service.path)) as db:
+        assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0  # Kafka hears nothing until the operator acts
+
+    confirm(service, first)
+    confirm(service, second)
+    with closing(sqlite3.connect(service.path)) as db:
         rows = db.execute("SELECT destination, body FROM outbox ORDER BY seq").fetchall()
     assert [destination for destination, _ in rows] == ["kafka", "kafka"]
     assert [json.loads(body)["alertId"] for _, body in rows] == [first["alertId"], second["alertId"]]
@@ -75,7 +87,8 @@ def test_history_is_a_sliding_window_of_ten(tmp_path):
 
 
 def test_kafka_publisher_sends_consumer_contract(tmp_path, monkeypatch):
-    event = {"schemaVersion": "1.0.0", "eventType": "tool_wear_alert", "alertId": "test", "toolNo": "25"}
+    event = {"schemaVersion": "1.1.0", "eventType": "tool_wear_alert", "action": "second_run",
+             "eventId": "event-1", "alertId": "test", "toolNo": "25"}
     sent = []
 
     class Producer:
@@ -96,8 +109,14 @@ def test_kafka_publisher_sends_consumer_contract(tmp_path, monkeypatch):
     monkeypatch.setattr("app.wear_alerts.AIOKafkaProducer", Producer)
     settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path))
     asyncio.run(WearAlerts(settings).publish(event))
-    assert sent == [(settings.tool_wear_alert_kafka_topic, b"test", event, {
-        "schemaVersion": b"1.0.0", "contentType": b"application/json",
+    assert sent == [(settings.tool_wear_alert_kafka_topic, b"event-1", event, {
+        "schemaVersion": b"1.1.0", "contentType": b"application/json", "action": b"second_run",
+    })]
+    sent.clear()  # an event queued before schema 1.1.0 (no action, no eventId) is still an inspection request
+    legacy = {"schemaVersion": "1.0.0", "eventType": "tool_wear_alert", "alertId": "old", "toolNo": "25"}
+    asyncio.run(WearAlerts(settings).publish(legacy))
+    assert sent == [(settings.tool_wear_alert_kafka_topic, b"old", legacy, {
+        "schemaVersion": b"1.0.0", "contentType": b"application/json", "action": b"inspection",
     })]
 
 
@@ -117,10 +136,9 @@ def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
         await task
         assert listener.get_nowait()[1]["label"] == "Prediction completed"
         assert listener.get_nowait()[1]["label"] == "Alert triggered"
-        # Persisted in the same order; one "queued" event per enabled destination (Kafka here).
+        # Persisted in the same order. Kafka is not notified at alert time, so there is no "queued" event here.
         assert [event["label"] for event in service.snapshot()["events"]] == [
-            "Prediction started", "Prediction completed", "Alert triggered",
-            "Notification queued", "Quality alert triggered",
+            "Prediction started", "Prediction completed", "Alert triggered", "Quality alert triggered",
         ]
 
     asyncio.run(run())
@@ -421,6 +439,7 @@ def test_stale_pending_notifications_expire_and_are_logged(tmp_path):
     settings, service = make_service(tmp_path)
     service.set_thresholds(WearValues(diameter=0.1, length=999))
     old, fresh = service.record(MockPrediction(index=10))["alert"], service.record(MockPrediction(index=10))["alert"]
+    confirm(service, old), confirm(service, fresh)
     # Make the first notification 11 minutes old (limit: 10 minutes).
     with closing(sqlite3.connect(service.path)) as db, db:
         body, seq = db.execute("SELECT body, seq FROM outbox WHERE body LIKE ?", (f'%{old["alertId"]}%',)).fetchone()
@@ -455,6 +474,7 @@ def test_the_delivery_loop_drops_expired_notifications_instead_of_sending_them(t
         settings, service = make_service(tmp_path)
         service.set_thresholds(WearValues(diameter=0.1, length=999))
         alert = service.record(MockPrediction(index=10))["alert"]
+        confirm(service, alert)
         with closing(sqlite3.connect(service.path)) as db, db:
             body, seq = db.execute("SELECT body, seq FROM outbox").fetchone()
             event = json.loads(body)
@@ -522,7 +542,9 @@ def test_snapshot_reports_destinations_and_pending_notifications(tmp_path):
     assert service.snapshot()["destinations"] == ["kafka"]
     assert service.snapshot()["pendingNotifications"] == 0
     service.set_thresholds(WearValues(diameter=0.1, length=999))
-    service.record(MockPrediction(index=10))
+    alert = service.record(MockPrediction(index=10))["alert"]
+    assert service.snapshot()["pendingNotifications"] == 0
+    confirm(service, alert)
     assert service.snapshot()["pendingNotifications"] == 1
 
 
@@ -558,3 +580,152 @@ def test_temi_trigger_is_an_empty_post_with_the_alert_id_as_idempotency_key(tmp_
     assert request.headers["Idempotency-Key"] == "alert-1"
     assert "authorization" not in request.headers
     assert [e["detail"] for e in service.snapshot()["events"]] == ["Temi API"]
+
+
+# ---- laser inspection → result → second run -------------------------------------------------------------------
+
+def make_alert(service, tool="25"):
+    service.set_thresholds(WearValues(diameter=0.1, length=0.05))
+    return service.record(MockPrediction(index=10))["alert"]  # diameter 0.35 and length 0.18: both above
+
+
+def outbox(service):
+    with closing(sqlite3.connect(service.path)) as db:
+        return [(destination, json.loads(body)) for destination, body in db.execute("SELECT destination, body FROM outbox ORDER BY seq")]
+
+
+def test_alert_only_notifies_temi_and_kafka_waits_for_the_operator(tmp_path):
+    settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path), tool_wear_demo_enabled=True,
+                        tool_wear_alert_kafka_enabled=True, tool_wear_alert_temi_enabled=True,
+                        tool_wear_alert_temi_url="http://temi.invalid/trigger")
+    service = WearAlerts(settings)
+    alert = make_alert(service)
+    assert [destination for destination, _ in outbox(service)] == ["temi"]  # unchanged: Temi right after the alert
+
+    inspection = confirm(service, alert)
+    assert inspection["status"] == "awaiting_result"
+    rows = outbox(service)
+    assert [destination for destination, _ in rows] == ["temi", "kafka"]
+    kafka = rows[1][1]
+    assert (kafka["schemaVersion"], kafka["eventType"], kafka["action"]) == ("1.1.0", "tool_wear_alert", "inspection")
+    assert (kafka["alertId"], kafka["machineId"], kafka["toolNo"], kafka["metrics"]) == (
+        alert["alertId"], settings.signals_machine_id, "25", ["diameter", "length"])
+    assert kafka["eventId"] and kafka["eventId"] != kafka["alertId"]
+
+    confirm(service, alert)  # confirming twice does not queue a second message
+    assert len(outbox(service)) == 2
+
+
+def test_inspection_result_arrives_with_a_new_wear_value_then_second_run_is_sent_once(tmp_path):
+    _, service = make_service(tmp_path)
+    alert = make_alert(service)
+    service.on_wear("25", 0.01, 0.02, "2026-11-19T01:00:00+00:00")  # seen before the inspection: the baseline
+    inspection = confirm(service, alert)
+    assert inspection["baseline"] == {"diameter": 0.01, "length": 0.02}
+
+    # The same values again, another tool, or only one of the two values: still waiting.
+    assert service.on_wear("25", 0.01, 0.02, "2026-11-19T01:00:01+00:00") is False
+    assert service.on_wear("99", 0.2, 0.2, "2026-11-19T01:00:02+00:00") is False
+    assert service.on_wear("25", 0.2, None, "2026-11-19T01:00:03+00:00") is False
+    assert service.snapshot()["inspection"]["status"] == "awaiting_result"
+
+    assert service.on_wear("25", 0.08, 0.03, "2026-11-19T01:00:04+00:00") is True
+    result = service.snapshot()["inspection"]
+    assert result["status"] == "result_ready"
+    assert result["result"] == {
+        "timestampUtc": "2026-11-19T01:00:04+00:00", "actual": {"diameter": 0.08, "length": 0.03},
+        "predicted": {"diameter": 0.35, "length": 0.18}, "thresholds": {"diameter": 0.1, "length": 0.05},
+        "exceeded": [],  # back within both thresholds
+    }
+    assert "Inspection result received" in [e["label"] for e in service.snapshot()["events"]]
+    assert service.on_wear("25", 0.5, 0.5, "2026-11-19T01:00:05+00:00") is False  # a result is only recorded once
+    assert service.snapshot()["inspection"]["result"]["actual"] == {"diameter": 0.08, "length": 0.03}
+
+    service.request_second_run(alert["alertId"])
+    service.request_second_run(alert["alertId"])  # a repeated click sends nothing more
+    rows = outbox(service)
+    assert [body["action"] for _, body in rows] == ["inspection", "second_run"]
+    second = rows[1][1]
+    assert second["alertId"] == alert["alertId"] and second["eventId"] != rows[0][1]["eventId"]
+    assert "metrics" not in second and "prediction" not in second and "result" not in second  # nothing else rides along
+    assert service.snapshot()["inspection"]["status"] == "second_run_requested"
+    assert "Second run requested" in [e["label"] for e in service.snapshot()["events"]]
+
+
+def test_a_still_exceeding_result_is_reported_and_no_baseline_means_the_first_pair_counts(tmp_path):
+    _, service = make_service(tmp_path)
+    alert = make_alert(service)
+    assert confirm(service, alert)["baseline"] == {"diameter": None, "length": None}  # nothing measured before the inspection
+    assert service.on_wear("25", 0.2, 0.01, "2026-11-19T02:00:00+00:00") is True
+    assert service.snapshot()["inspection"]["result"]["exceeded"] == ["diameter"]
+
+
+def test_second_run_needs_a_result_and_dismissing_closes_the_inspection(tmp_path):
+    _, service = make_service(tmp_path)
+    alert = make_alert(service)
+    for call in (service.request_second_run, service.dismiss_inspection):
+        try:
+            call("unknown")
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        else:
+            raise AssertionError("expected 404")
+    try:
+        service.start_inspection("unknown")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    confirm(service, alert)
+    try:
+        service.request_second_run(alert["alertId"])  # no result yet
+    except HTTPException as exc:
+        assert exc.status_code == 409
+    else:
+        raise AssertionError("expected 409")
+    service.dismiss_inspection(alert["alertId"])
+    assert service.snapshot()["inspection"]["status"] == "dismissed"
+    assert service.on_wear("25", 0.2, 0.2, "2026-11-19T03:00:00+00:00") is False  # nothing is waiting any more
+    assert [body["action"] for _, body in outbox(service)] == ["inspection"]
+
+
+def test_a_newer_confirmation_supersedes_the_open_inspection_of_the_same_tool(tmp_path):
+    _, service = make_service(tmp_path)
+    first, second = make_alert(service), make_alert(service)
+    confirm(service, first)
+    confirm(service, second)
+    with closing(sqlite3.connect(service.path)) as db:
+        states = [json.loads(body)["status"] for (body,) in db.execute("SELECT body FROM inspections ORDER BY seq")]
+    assert states == ["superseded", "awaiting_result"]
+    service.on_wear("25", 0.3, 0.3, "2026-11-19T04:00:00+00:00")
+    assert service.snapshot()["inspection"]["alertId"] == second["alertId"]
+    assert service.snapshot()["inspection"]["status"] == "result_ready"
+
+
+def test_controller_rows_in_signal_batches_complete_the_inspection_and_reset_clears_it(tmp_path):
+    settings, service = make_service(tmp_path)
+    alert = make_alert(service)
+    state = {}
+    row = lambda stamp, x, z, tool=25: {"timestamp": stamp, "tool_no": tool, "xWearMm": x, "zWearMm": z}
+    service.on_signals(settings.signals_machine_id, {"process": [row("2026-11-19T05:00:00Z", 0.01, 0.02)]}, state)
+    assert confirm(service, alert)["baseline"] == {"diameter": 0.01, "length": 0.02}
+    service.on_signals(settings.signals_machine_id, {"process": [row("2026-11-19T05:00:01Z", 0.01, 0.02)]}, state)
+    assert service.snapshot()["inspection"]["status"] == "awaiting_result"
+    service.on_signals(settings.signals_machine_id, {"process": [
+        row("2026-11-19T05:00:01Z", 0.99, 0.99),  # an old timestamp (overlapping window) is ignored
+        {"timestamp": "2026-11-19T05:00:02Z", "tool_no": 25.0, "tool_wear_x_mm": 0.04, "tool_wear_z_mm": 0.02},
+    ]}, state)
+    assert service.snapshot()["inspection"]["result"]["actual"] == {"diameter": 0.04, "length": 0.02}
+
+    service.reset()
+    assert service.snapshot()["inspection"] is None
+
+
+def test_simulated_wear_takes_the_same_path_as_a_controller_row(tmp_path):
+    _, service = make_service(tmp_path)
+    alert = make_alert(service)
+    confirm(service, alert)
+    result = service.simulate_wear(alert["alertId"], WearValues(diameter=0.06, length=0.04))
+    assert result["status"] == "result_ready" and result["result"]["actual"] == {"diameter": 0.06, "length": 0.04}
+    try:
+        service.simulate_wear(alert["alertId"], WearValues(diameter=0.1, length=0.1))
+    except HTTPException as exc:
+        assert exc.status_code == 409

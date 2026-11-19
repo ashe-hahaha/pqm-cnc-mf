@@ -16,13 +16,15 @@ it("shows the newest alert centered, reveals details, and confirms or dismisses"
   const root = createRoot(host);
   const onConfirm = vi.fn(), onDismiss = vi.fn();
   const render = (alerts: ReturnType<typeof alert>[]) => act(async () => root.render(React.createElement(WearAlertPopup, {
-    alerts, destinations: ["kafka", "temi"], onConfirm, onDismiss })));
+    alerts, destinations: ["temi"], onConfirm, onDismiss })));
 
   await render([]);
   expect(host.querySelector('[role="alertdialog"]')).toBeNull();
 
   await render([alert("a-1"), alert("a-2")]);
   const dialog = host.querySelector('[role="alertdialog"]')!;
+  expect(dialog.textContent).toContain("Tool wear prediction alert");
+  expect(dialog.textContent).toContain("Do you want to perform a laser inspection?");
   expect(dialog.textContent).toContain("T25");
   expect(dialog.textContent).toContain("2 new alerts");
   expect(dialog.textContent).toContain("0.35 mm");
@@ -30,12 +32,13 @@ it("shows the newest alert centered, reveals details, and confirms or dismisses"
 
   const buttons = [...dialog.querySelectorAll("button")];
   await act(async () => buttons.find(b => b.textContent === "Details")!.click());
-  expect(dialog.textContent).toContain("Kafka, Temi");
+  expect(dialog.textContent).toContain("Temi");
   expect(dialog.textContent).toContain("a-2");
 
-  await act(async () => buttons.find(b => b.textContent?.startsWith("Confirm"))!.click());
+  await act(async () => buttons.find(b => b.textContent === "Yes, laser inspection")!.click());
   expect(onConfirm).toHaveBeenCalledOnce();
-  await act(async () => buttons.find(b => b.textContent === "Dismiss")!.click());
+  expect(onConfirm.mock.calls[0][0].alertId).toBe("a-2");  // the newest alert is the one that gets inspected
+  await act(async () => buttons.find(b => b.textContent === "Not now")!.click());
   expect(onDismiss).toHaveBeenCalledOnce();
   await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
   expect(onDismiss).toHaveBeenCalledTimes(2);

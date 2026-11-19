@@ -1,6 +1,13 @@
 # Tool wear alert Kafka consumer handoff
 
-The backend publishes a notification when a mock wear prediction crosses the configured diameter or length threshold. The NUC can use it to trigger a capture.
+The backend publishes a notification when the operator reacts to a tool wear prediction alert. The NUC distinguishes the two kinds of message by the `action` field:
+
+| `action` | When it is sent | What the NUC should do |
+| --- | --- | --- |
+| `inspection` | The operator answered **Yes, laser inspection** in the "Tool wear prediction alert" popup | Start the laser inspection (and the capture, as before) |
+| `second_run` | The operator answered **Yes, second run** in the "Laser inspection result" popup, after the new wear values arrived | Start the second run |
+
+The alert itself no longer produces a Kafka message. Temi is unchanged: it is still triggered right after the alert, once per alert, and never for a second run.
 
 | Setting | Value |
 | --- | --- |
@@ -11,26 +18,54 @@ The backend publishes a notification when a mock wear prediction crosses the con
 | Producer delivery | `acks=all`, idempotence enabled, persistent retries on delivery failure |
 | NUC group ID | Suggested `makino-microscope-wear-alerts`. Use a stable group ID. |
 | NUC offset policy | Use `latest` for the first live-only demo run and start the consumer before publishing. On restart, resume the committed group offsets. |
-| Key | UTF-8 `alertId` UUID string |
-| Headers | `schemaVersion=1.0.0`, `contentType=application/json`, both UTF-8 |
+| Key | UTF-8 `eventId` UUID string (unique per message) |
+| Headers | `schemaVersion=1.1.0`, `contentType=application/json`, `action=inspection` or `second_run`, all UTF-8 |
 | Value | UTF-8 JSON |
+
+`inspection` message (the old alert message, with `action` and `eventId` added and `schemaVersion` raised to 1.1.0):
 
 ```json
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "1.1.0",
   "eventType": "tool_wear_alert",
+  "action": "inspection",
+  "eventId": "0b9d6c52-7a3e-4c0e-9a4f-3f1f4f7f5b11",
   "alertId": "46f07dbe-72ed-4605-834f-e1c024a0677e",
   "machineId": "Makino_01",
-  "toolNo": "167",
+  "toolNo": "25",
   "metrics": ["diameter", "length"],
-  "timestampUtc": "2026-11-10T06:08:45.421000+00:00",
+  "timestampUtc": "2026-11-19T06:08:45.421000+00:00",
   "source": "mock"
 }
 ```
 
-`metrics` contains the metric names that newly crossed their thresholds. One prediction can raise both in one event. `toolNo` is a string, `timestampUtc` is ISO 8601 UTC, and `source` identifies the demo prediction. The message contains no image. Continue publishing captures to `makino_microscope_image` using the existing image schema.
+`second_run` message (nothing but the identifiers; the `action` is what matters):
 
-Persist processed `alertId` values and commit the Kafka offset after the NUC has accepted the capture job durably. Delivery can repeat after a retry or restart, so use `alertId` to avoid starting another capture for the same alert.
+```json
+{
+  "schemaVersion": "1.1.0",
+  "eventType": "tool_wear_alert",
+  "action": "second_run",
+  "eventId": "6c1f0f0e-52f4-4d0e-8d38-0d6a2a5a9c77",
+  "alertId": "46f07dbe-72ed-4605-834f-e1c024a0677e",
+  "machineId": "Makino_01",
+  "toolNo": "25",
+  "timestampUtc": "2026-11-19T06:12:10.118000+00:00",
+  "source": "mock"
+}
+```
+
+Field notes:
+
+- `action` (and the `action` header) is the only field the NUC needs to branch on. Ignore any value it does not know.
+- `eventId` is unique per message and is also the Kafka key. Use it for de-duplication: an `inspection` and a `second_run` for the same alert share one `alertId` but have different `eventId` values.
+- `alertId` is the tool wear alert both messages belong to (at most one `inspection` and one `second_run` per alert).
+- `metrics` (only in `inspection`) lists the metrics that crossed their thresholds; one prediction can raise both. `toolNo` is a string, `timestampUtc` is ISO 8601 UTC (the time the operator answered), and `source` identifies the demo.
+- The messages contain no image and no wear values. Continue publishing captures to `makino_microscope_image` using the existing image schema.
+
+Persist processed `eventId` values and commit the Kafka offset after the NUC has accepted the job durably. Delivery can repeat after a retry or restart, so de-duplicate on `eventId`, not on `alertId` (de-duplicating on `alertId` would drop the `second_run`).
+
+**Rollout.** Update the NUC consumer first, so it branches on `action` and ignores unknown values, then deploy the backend. A consumer that still treats every message as a capture request would start a capture for a `second_run` message. Messages that were already queued before the upgrade have no `action` or `eventId` and are published as `inspection` (header `schemaVersion=1.0.0`, key `alertId`).
 
 ## Enable and verify
 
@@ -45,15 +80,28 @@ TOOL_WEAR_ALERT_TEMI_ENABLED=false
 
 Use these demo controls on an access-controlled deployment. The threshold and mock submission endpoints have no separate application authentication.
 
-1. Start the NUC consumer. In Tool Wear, set both thresholds to `0.1` mm.
-2. In Product Quality, submit a mock prediction for tool `167` with diameter and length both `0`, then submit diameter `0.2` and length `0`. The first prediction resets the crossing state.
-3. Compare `alertId` from the NUC message with the backend logs. The log `Tool wear alert published to Kafka` includes the acknowledged topic, partition and offset. A resulting capture produces `Microscope image received from Kafka`.
+1. Start the NUC consumer. In Tool Wear, set the thresholds (for example `0.1` mm for diameter).
+2. Trigger mock predictions until the abnormal one (#10) raises the "Tool wear prediction alert" popup. Nothing is published to Kafka yet.
+3. Click **Yes, laser inspection**. The NUC receives the `inspection` message. In the Mock tool wear prediction panel, enter new Diameter and Tool length wear values and click **Simulate new wear** (a real controller row with new `xWearMm` / `zWearMm` values does the same).
+4. The "Laser inspection result" popup shows the measured wear against the prediction and the threshold. Click **Yes, second run**. The NUC receives the `second_run` message.
+5. Compare `eventId` from the NUC message with the backend logs. The log `Tool wear notification published to Kafka` includes the action, the acknowledged topic, partition and offset. A resulting capture produces `Microscope image received from Kafka`.
 
 ```sh
 sudo docker compose logs -f backend
 ```
 
 Thresholds, prediction state, alert history and pending deliveries are stored in a separate SQLite database inside the existing microscope volume.
+
+## Laser inspection flow
+
+1. An alert fires: the "Tool wear prediction alert" popup asks "Do you want to perform a laser inspection?". Temi is triggered (unchanged).
+2. **Yes, laser inspection** (`POST /api/tool-wear/demo/alerts/{alertId}/inspection`): the backend stores the tool's current actual wear as the baseline, starts waiting, and queues the Kafka `inspection` message. **Not now** closes the popup and does nothing else. A newer confirmation for the same tool replaces an inspection that is still open.
+3. While waiting, every controller row of that tool is checked. When a row carries both `xWearMm` (diameter) and `zWearMm` (tool length) and at least one differs from the baseline by more than 1e-6 mm (or no baseline existed), the inspection result is stored once: the actual values, the predicted values and thresholds of the alert, and which metrics are still above their threshold.
+4. The "Laser inspection result" popup appears (also after a page reload while the result is waiting). **Yes, second run** (`POST /api/tool-wear/demo/inspections/{alertId}/second-run`) queues the Kafka `second_run` message once; repeated clicks send nothing more. **Not now** (`.../dismiss`) closes the inspection; a dismissed inspection cannot be reopened, only a new alert starts another.
+5. The state is in the `inspections` table of `wear-alerts.sqlite3` and in the `inspection` field of `GET /api/tool-wear/demo`. Reset demo clears it. The event log shows Laser inspection confirmed, Inspection result received and Second run requested.
+6. Demo helper: `POST /api/tool-wear/demo/inspections/{alertId}/simulate-wear` with `{"diameter": 0.06, "length": 0.04}` behaves like a controller row.
+
+Like the NC line trigger, the wear check only runs while a page is subscribed to `/api/signals/stream`.
 
 To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_ALERT_TEMI_URL`. The current adapter sends an HTTP POST with an empty body and `Idempotency-Key: <alertId>`. Set `TOOL_WEAR_ALERT_TEMI_TOKEN` if the endpoint expects a Bearer token. Confirm the request contract with the Temi endpoint owner before enabling it.
 

@@ -33,6 +33,11 @@ NC_QC_VALUE = "93"  # nc_line value that samples the measured quality (no predic
 QC_MACRO = "956"  # key of the process row's `macros` object that holds the measured diameter (mm)
 NC_RANGE_LOW, NC_RANGE_HIGH = 73, 74  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
+KAFKA_SCHEMA_VERSION = "1.1.0"
+ACTION_INSPECTION = "inspection"  # Kafka `action`: the operator confirmed a laser inspection
+ACTION_SECOND_RUN = "second_run"  # Kafka `action`: the operator asked for a second run after the inspection
+INSPECTION_OPEN = ("awaiting_result", "result_ready")  # statuses that are still waiting for the operator or the controller
+WEAR_EPSILON = 1e-6  # mm; a wear value that differs by more than this counts as a new value
 
 
 class WearValues(BaseModel):
@@ -92,6 +97,22 @@ def nc_trigger_kind(previous, current, triggers):
     return None
 
 
+def wear_from_row(row):
+    """Actual (diameter, length) wear in mm from a controller row: xWearMm / zWearMm, or the older tool_wear_*_mm names."""
+    def pick(*keys):
+        for key in keys:
+            value = row.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                return float(value)
+        return None
+    return pick("xWearMm", "tool_wear_x_mm"), pick("zWearMm", "tool_wear_z_mm")
+
+
+def event_key(event):
+    """Unique id of an outgoing notification (Kafka key). Events queued before schema 1.1.0 only have `alertId`."""
+    return event.get("eventId") or event["alertId"]
+
+
 def qc_from_row(row):
     """Measured diameter (mm) from a process row's `macros` map (string macro number -> float); None if unusable."""
     macros = row.get("macros")
@@ -110,6 +131,7 @@ class WearAlerts:
         self.nc_last_trigger = None  # monotonic time of the last automatic trigger
         self.nc_fallback: asyncio.Task | None = None  # pending fallback trigger armed by a "start" trigger
         self.prediction_running = False
+        self.latest_wear: dict[str, tuple[float | None, float | None]] = {}  # tool -> last seen (diameter, length) wear
         self.background: set[asyncio.Task] = set()
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
         self.tasks: list[asyncio.Task] = []
@@ -128,6 +150,9 @@ class WearAlerts:
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS inspections (
+                    seq INTEGER PRIMARY KEY, alert_id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS events (
                     seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
                 );
@@ -152,6 +177,7 @@ class WearAlerts:
             pending = db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
             spec = db.execute("SELECT body FROM quality_spec WHERE id=1").fetchone()[0]
             last_qc = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
+            inspection = db.execute("SELECT body FROM inspections ORDER BY seq DESC LIMIT 1").fetchone()
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
                 "history": [json.loads(row[0]) for row in reversed(history)],
@@ -160,6 +186,7 @@ class WearAlerts:
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
                 "lastQc": json.loads(last_qc[0]) if last_qc else None,
                 "ncWatch": self.nc_status(),
+                "inspection": json.loads(inspection[0]) if inspection else None,
                 "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
                 "destinations": self.destinations, "pendingNotifications": pending,
                 "alerts": [json.loads(row[0]) for row in alerts],
@@ -204,6 +231,7 @@ class WearAlerts:
         changed = False
         fires = []
         qc_row = None
+        wear_rows = []
         for row in rows:
             if not first and row["timestamp"] <= state["last_timestamp"]:
                 continue  # windows overlap and a stopped database repeats old rows
@@ -217,16 +245,162 @@ class WearAlerts:
                 changed = True
             state["value"] = current
             state["last_timestamp"] = row["timestamp"]
+            wear_rows.append((normalize_nc(row.get("tool_no")), *wear_from_row(row), row["timestamp"]))
         self.nc["seenAt"] = time.monotonic()
         if state.get("value") != self.nc["value"]:
             self.nc["value"] = state.get("value")
             changed = True
         if qc_row is not None:
             self.record_qc(qc_row)
+        result_ready = False
+        for tool, diameter, length, stamp in wear_rows:  # the first batch after a page opens only records the values
+            result_ready |= self.on_wear(tool, diameter, length, stamp, detect=not first)
+        if result_ready:
+            self.notify_listeners()
         for fire in fires:  # in line order; the shared cooldown lets only the first one through
             self.start_auto_prediction(*fire)
         if not fires and changed:
             self.notify_listeners()
+
+    def on_wear(self, tool, diameter, length, stamp, detect=True):
+        """Remember the latest actual wear of a tool; a new value completes the tool's waiting laser inspections."""
+        if tool is None:
+            return False
+        previous = self.latest_wear.get(tool, (None, None))
+        self.latest_wear[tool] = (diameter if diameter is not None else previous[0],
+                                  length if length is not None else previous[1])
+        if not detect or diameter is None or length is None:
+            return False
+        return self.complete_inspections(tool, diameter, length, stamp)
+
+    def complete_inspections(self, tool, diameter, length, stamp):
+        """Both wear values arrived and at least one differs from the value seen at confirmation: result is ready."""
+        completed = []
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            for seq, body in db.execute("SELECT seq, body FROM inspections").fetchall():
+                inspection = json.loads(body)
+                if inspection["status"] != "awaiting_result" or normalize_nc(inspection["toolNo"]) != tool:
+                    continue
+                baseline = inspection["baseline"]
+                if all(baseline[metric] is not None and abs(value - baseline[metric]) <= WEAR_EPSILON
+                       for metric, value in (("diameter", diameter), ("length", length))):
+                    continue  # still the value from before the inspection
+                actual = {"diameter": diameter, "length": length}
+                thresholds = inspection["thresholds"]
+                inspection["status"] = "result_ready"
+                inspection["result"] = {
+                    "timestampUtc": stamp, "actual": actual, "predicted": inspection["predicted"],
+                    "thresholds": thresholds,
+                    "exceeded": [metric for metric in METRICS if actual[metric] > thresholds[metric]],
+                }
+                db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
+                completed.append(inspection)
+        for inspection in completed:
+            self.log_event("Inspection result received", inspection["toolNo"], timestamp=inspection["result"]["timestampUtc"],
+                           detail=f'Diameter wear {diameter} mm · Tool length wear {length} mm',
+                           event_id=f'{inspection["alertId"]}:result')
+        return bool(completed)
+
+    def kafka_event(self, action, alert_id, machine, tool, now, **extra):
+        """Notification for the NUC consumer: `action` tells an inspection request from a second run."""
+        return {"schemaVersion": KAFKA_SCHEMA_VERSION, "eventType": "tool_wear_alert", "action": action,
+                "eventId": str(uuid4()), "alertId": alert_id, "machineId": machine, "toolNo": tool,
+                **extra, "timestampUtc": now, "source": "mock"}
+
+    def queue_kafka(self, db, event):
+        """Queue a notification for Kafka only (Temi is only notified when the alert itself fires)."""
+        if "kafka" not in self.destinations:
+            return False
+        db.execute("INSERT INTO outbox(destination, body) VALUES (?, ?)", ("kafka", json.dumps(event)))
+        return True
+
+    def get_inspection(self, db, alert_id):
+        row = db.execute("SELECT body FROM inspections WHERE alert_id=?", (alert_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def start_inspection(self, alert_id):
+        """Operator chose "laser inspection": remember the wear seen now, wait for a new value, notify Kafka (inspection)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = self.get_inspection(db, alert_id)
+            if existing:
+                return existing  # a repeated confirmation changes nothing and sends nothing
+            row = db.execute("SELECT body FROM alerts WHERE json_extract(body, '$.alertId')=? "
+                             "AND json_extract(body, '$.kind')='tool_wear'", (alert_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, "Unknown tool wear alert")
+            alert = json.loads(row[0])
+            tool = alert["toolNo"]
+            for seq, body in db.execute("SELECT seq, body FROM inspections").fetchall():  # one open inspection per tool
+                other = json.loads(body)
+                if other["status"] in INSPECTION_OPEN and other["toolNo"] == tool:
+                    other["status"] = "superseded"
+                    db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(other), seq))
+            diameter, length = self.latest_wear.get(normalize_nc(tool), (None, None))
+            inspection = {"alertId": alert_id, "machineId": alert["machineId"], "toolNo": tool,
+                          "status": "awaiting_result", "confirmedAt": now, "metrics": alert["metrics"],
+                          "baseline": {"diameter": diameter, "length": length},
+                          "predicted": {metric: alert["prediction"][metric] for metric in METRICS},
+                          "thresholds": alert["thresholds"], "result": None}
+            db.execute("INSERT INTO inspections(alert_id, body) VALUES (?, ?)", (alert_id, json.dumps(inspection)))
+            event = self.kafka_event(ACTION_INSPECTION, alert_id, alert["machineId"], tool, now, metrics=alert["metrics"])
+            queued = self.queue_kafka(db, event)
+        self.log_event("Laser inspection confirmed", tool, detail="Waiting for new wear values",
+                       event_id=f"{alert_id}:inspection")
+        if queued:
+            self.log_event("Notification queued", tool, detail=f"{self.destination_label('kafka')} · {ACTION_INSPECTION}",
+                           event_id=f'{event["eventId"]}:kafka:queued')
+        return inspection
+
+    def request_second_run(self, alert_id):
+        """Operator chose "second run" after seeing the inspection result: notify Kafka (second_run) once."""
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            inspection = self.get_inspection(db, alert_id)
+            if inspection is None:
+                raise HTTPException(404, "Unknown inspection")
+            if inspection["status"] == "second_run_requested":
+                return inspection
+            if inspection["status"] != "result_ready":
+                raise HTTPException(409, "No inspection result to act on")
+            inspection["status"] = "second_run_requested"
+            db.execute("UPDATE inspections SET body=? WHERE alert_id=?", (json.dumps(inspection), alert_id))
+            event = self.kafka_event(ACTION_SECOND_RUN, alert_id, inspection["machineId"], inspection["toolNo"], now)
+            queued = self.queue_kafka(db, event)
+        self.log_event("Second run requested", inspection["toolNo"], event_id=f'{alert_id}:second_run')
+        if queued:
+            self.log_event("Notification queued", inspection["toolNo"],
+                           detail=f"{self.destination_label('kafka')} · {ACTION_SECOND_RUN}",
+                           event_id=f'{event["eventId"]}:kafka:queued')
+        return inspection
+
+    def dismiss_inspection(self, alert_id):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            inspection = self.get_inspection(db, alert_id)
+            if inspection is None:
+                raise HTTPException(404, "Unknown inspection")
+            if inspection["status"] in INSPECTION_OPEN:
+                inspection["status"] = "dismissed"
+                db.execute("UPDATE inspections SET body=? WHERE alert_id=?", (json.dumps(inspection), alert_id))
+        return inspection
+
+    def simulate_wear(self, alert_id, values: WearValues):
+        """Demo: inject the controller's new wear values for a waiting inspection (same path as a real controller row)."""
+        with closing(sqlite3.connect(self.path)) as db:
+            inspection = self.get_inspection(db, alert_id)
+        if inspection is None:
+            raise HTTPException(404, "Unknown inspection")
+        if inspection["status"] != "awaiting_result":
+            raise HTTPException(409, "Inspection is not waiting for wear values")
+        tool = normalize_nc(inspection["toolNo"])
+        self.on_wear(tool, values.diameter, values.length, datetime.now(timezone.utc).isoformat())
+        self.notify_listeners()
+        with closing(sqlite3.connect(self.path)) as db:
+            return self.get_inspection(db, alert_id)
 
     def record_qc(self, row):
         """NC line reached NC_QC_VALUE: keep the measured diameter (macro QC_MACRO) as the quality balloon's last QC."""
@@ -329,7 +503,7 @@ class WearAlerts:
             )
             service.log_event("Alert triggered", TOOL_NO, timestamp=alert["timestampUtc"],
                               detail=detail, event_id=f'{alert["alertId"]}:alert')
-            for destination in service.destinations:
+            for destination in service.alert_destinations:
                 service.log_event("Notification queued", TOOL_NO, detail=service.destination_label(destination),
                                   event_id=f'{alert["alertId"]}:{destination}:queued')
         quality_alert = result["qualityAlert"]
@@ -349,7 +523,7 @@ class WearAlerts:
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            for table in ("predictions", "alerts", "outbox", "last_qc"):
+            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections"):
                 db.execute(f"DELETE FROM {table}")
             for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
                 stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()
@@ -389,7 +563,7 @@ class WearAlerts:
                          "metrics": triggered, "timestampUtc": now, "source": "mock"}
                 alert = {**event, "kind": "tool_wear", "prediction": prediction, "thresholds": thresholds}
                 db.execute("INSERT INTO alerts(body) VALUES (?)", (json.dumps(alert),))
-                for destination in self.destinations:
+                for destination in self.alert_destinations:
                     db.execute("INSERT INTO outbox(destination, body) VALUES (?, ?)",
                                (destination, json.dumps(event)))
             # Quality: alert when the predicted value leaves the tolerance band (events + Alerts only, no Kafka).
@@ -419,14 +593,16 @@ class WearAlerts:
         try:
             async with asyncio.timeout(10):
                 await producer.start()
+                action = event.get("action", ACTION_INSPECTION)
                 result = await producer.send_and_wait(
-                    topic, key=event["alertId"].encode(), value=json.dumps(event).encode(),
-                    headers=[("schemaVersion", b"1.0.0"), ("contentType", b"application/json")],
+                    topic, key=event_key(event).encode(), value=json.dumps(event).encode(),
+                    headers=[("schemaVersion", event.get("schemaVersion", "1.0.0").encode()),
+                             ("contentType", b"application/json"), ("action", action.encode())],
                 )
-            self.log_event("Notification sent", event["toolNo"], detail=f"Kafka · {topic}",
-                           event_id=f'{event["alertId"]}:kafka')
-            logger.info("Tool wear alert published to Kafka alertId=%s topic=%s partition=%s offset=%s",
-                        event["alertId"], topic, result.partition, result.offset)
+            self.log_event("Notification sent", event["toolNo"], detail=f"Kafka · {topic} · {action}",
+                           event_id=f'{event_key(event)}:kafka')
+            logger.info("Tool wear notification published to Kafka action=%s alertId=%s eventId=%s topic=%s partition=%s offset=%s",
+                        action, event["alertId"], event_key(event), topic, result.partition, result.offset)
         finally:
             async with asyncio.timeout(5):
                 await producer.stop()
@@ -454,7 +630,7 @@ class WearAlerts:
         """Log a failed send; the page gets a (rate-limited) event so failures are visible there too."""
         logger.warning("Tool wear alert delivery failed destination=%s alertId=%s error=%s",
                        destination, event["alertId"], type(exc).__name__)
-        key, now = (event["alertId"], destination), time.monotonic()
+        key, now = (event_key(event), destination), time.monotonic()
         last = self.last_failure_event.get(key)
         if last is None or now - last >= FAILURE_EVENT_INTERVAL_S:
             self.last_failure_event[key] = now
@@ -485,7 +661,7 @@ class WearAlerts:
         with db:
             db.executemany("DELETE FROM outbox WHERE seq=?", [(seq,) for seq, _ in expired])
         for _, event in expired:
-            self.last_failure_event.pop((event["alertId"], destination), None)
+            self.last_failure_event.pop((event_key(event), destination), None)
         logger.warning("Tool wear alert notifications expired destination=%s count=%s older_than=%ss",
                        destination, len(expired), limit)
         self.log_event("Notification expired", expired[0][1]["toolNo"],
@@ -515,9 +691,14 @@ class WearAlerts:
                         db.execute("UPDATE outbox SET attempts=attempts+1, due=unixepoch()+? WHERE seq=?",
                                    (min(60, 2 ** min(attempts + 1, 6)), seq))
                 else:
-                    self.last_failure_event.pop((event["alertId"], destination), None)
+                    self.last_failure_event.pop((event_key(event), destination), None)
                     with db:
                         db.execute("DELETE FROM outbox WHERE seq=?", (seq,))
+
+    @property
+    def alert_destinations(self):
+        """Destinations notified when an alert fires: Kafka is not among them, it only hears about operator actions."""
+        return [name for name in self.destinations if name != "kafka"]
 
     @property
     def destinations(self):
@@ -594,6 +775,35 @@ async def set_quality_spec(request: Request, spec: QualitySpec):
 @router.post("/prediction")
 async def mock_prediction(request: Request, values: MockPrediction):
     return await enabled_service(request).run_prediction(values)
+
+
+@router.post("/alerts/{alert_id}/inspection")
+async def confirm_inspection(request: Request, alert_id: str):
+    service = enabled_service(request)
+    result = await asyncio.to_thread(service.start_inspection, alert_id)
+    service.notify_listeners()
+    return result
+
+
+@router.post("/inspections/{alert_id}/second-run")
+async def second_run(request: Request, alert_id: str):
+    service = enabled_service(request)
+    result = await asyncio.to_thread(service.request_second_run, alert_id)
+    service.notify_listeners()
+    return result
+
+
+@router.post("/inspections/{alert_id}/dismiss")
+async def dismiss_inspection(request: Request, alert_id: str):
+    service = enabled_service(request)
+    result = await asyncio.to_thread(service.dismiss_inspection, alert_id)
+    service.notify_listeners()
+    return result
+
+
+@router.post("/inspections/{alert_id}/simulate-wear")
+async def simulate_wear(request: Request, alert_id: str, values: WearValues):
+    return await asyncio.to_thread(enabled_service(request).simulate_wear, alert_id, values)
 
 
 @router.post("/reset")

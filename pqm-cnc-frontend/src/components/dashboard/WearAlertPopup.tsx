@@ -6,12 +6,15 @@ import type { ToolWearAlert } from "./WearAlertDemo";
 
 const METRIC_LABEL = { diameter: "Diameter wear", length: "Tool length wear" } as const;
 
-/** Centered warning shown on the home page when a new tool wear alert fires; Confirm goes to the Tool Wear page. */
+/**
+ * Centered warning shown on the home page when a new tool wear prediction alert fires. It asks whether to do a laser
+ * inspection; "Yes" confirms the newest alert (the backend then notifies Kafka and waits for the new wear values).
+ */
 export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss }: {
   alerts: readonly ToolWearAlert[];
-  /** Notification targets the backend sends the alert to (shown in the details). */
+  /** Notification targets the backend sends the alert itself to (shown in the details). */
   destinations?: readonly string[];
-  onConfirm: () => void;
+  onConfirm: (alert: ToolWearAlert) => void;
   onDismiss: () => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
@@ -36,7 +39,7 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
         <div className="flex items-start gap-3">
           <span aria-hidden="true" className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-bad/20 text-lg font-bold text-bad">!</span>
           <div className="min-w-0">
-            <h2 id="wear-alert-title" className="text-sm font-semibold text-foreground">Tool wear warning</h2>
+            <h2 id="wear-alert-title" className="text-sm font-semibold text-foreground">Tool wear prediction alert</h2>
             <p className="text-[11px] text-[#8fa3b5]">
               {toolLabel(toolKey(prediction.toolNo))} · {new Date(alert.timestampUtc).toLocaleString()}
               {alerts.length > 1 ? ` · ${alerts.length} new alerts` : ""}
@@ -51,6 +54,7 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
             </li>
           ))}
         </ul>
+        <p className="mt-3 text-xs text-[#c6d7e4]">Do you want to perform a laser inspection?</p>
         {showDetails && (
           <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
             <dt className="text-[#8fa3b5]">Prediction</dt>
@@ -58,7 +62,7 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
             <dt className="text-[#8fa3b5]">Machine</dt>
             <dd className="text-[#c6d7e4]">{prediction.machineId}</dd>
             <dt className="text-[#8fa3b5]">Notified</dt>
-            <dd className="text-[#c6d7e4]">{destinations.length ? destinations.map(name => name === "kafka" ? "Kafka" : name === "temi" ? "Temi" : name).join(", ") : "No notification target enabled"}</dd>
+            <dd className="text-[#c6d7e4]">{destinations.length ? destinations.map(name => name === "kafka" ? "Kafka" : name === "temi" ? "Temi" : name).join(", ") : "None"}</dd>
             <dt className="text-[#8fa3b5]">Alert ID</dt>
             <dd className="break-all text-[#c6d7e4]">{alert.alertId}</dd>
           </dl>
@@ -71,11 +75,11 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
           <span className="flex gap-2">
             <button type="button" onClick={onDismiss}
               className="rounded border border-[#314254] px-3 py-1.5 text-xs text-[#8fa3b5] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
-              Dismiss
+              Not now
             </button>
-            <button ref={confirmRef} type="button" onClick={onConfirm}
+            <button ref={confirmRef} type="button" onClick={() => onConfirm(alert)}
               className="rounded border border-[#3d8fd1]/60 bg-[#23425b] px-3 py-1.5 text-xs font-semibold text-[#a5d8fa] hover:bg-[#2b5272] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
-              Confirm · go to Tool Wear
+              Yes, laser inspection
             </button>
           </span>
         </div>

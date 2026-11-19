@@ -27,6 +27,24 @@ type QualityAlert = {
   prediction: Prediction;
 };
 export type WearAlert = ToolWearAlert | QualityAlert;
+/**
+ * Laser inspection the operator confirmed for a tool wear alert. `result` appears once the controller reports new
+ * wear values (status "result_ready"); `actual` is the wear measured after the inspection.
+ */
+export type WearInspection = {
+  alertId: string;
+  machineId: string;
+  toolNo: string | number;
+  status: "awaiting_result" | "result_ready" | "second_run_requested" | "dismissed" | "superseded";
+  confirmedAt: string;
+  result: null | {
+    timestampUtc: string;
+    actual: Values;
+    predicted: Values;
+    thresholds: Values;
+    exceeded: (keyof Values)[];
+  };
+};
 export type QualitySpec = { nominal: number; upperTol: number; lowerTol: number };
 /** Controller NC line watch: the backend starts a prediction when the value changes to one of `triggerValues`. */
 export type NcWatch = { field: string; triggerValues: string[]; rangeValues?: [number, number]; fallbackSeconds?: number; fallbackPending?: boolean; running: boolean; value: string | null; lastTriggerAt: string | null };
@@ -43,6 +61,8 @@ export type WearAlertSnapshot = {
   /** Tolerance of the quality balloon, stored by the backend (used by every trigger). */
   qualitySpec?: QualitySpec;
   ncWatch?: NcWatch;
+  /** The most recent laser inspection (null before the first one). */
+  inspection?: WearInspection | null;
   /** Last measured diameter (mm) sampled from the controller when the NC line reaches the QC step. */
   lastQc?: { value: number; timestampUtc: string; machineId?: string; toolNo?: string | number | null } | null;
   /** 1-based index the next automatic trigger will use. */
@@ -74,6 +94,27 @@ const endpoint = `${base}/api/tool-wear/demo`;
 const fields = ["diameter", "length"] as const;
 const fieldStyle = "w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]";
 const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5d8fa] disabled:opacity-50";
+
+async function postInspection(path: string, body?: unknown): Promise<WearInspection | null> {
+  try {
+    const response = await fetch(`${endpoint}/${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    requestWearRefresh();
+    return response.ok ? await response.json() as WearInspection : null;
+  } catch {
+    return null;
+  }
+}
+const inspectionPath = (alertId: string, action: string) => `inspections/${encodeURIComponent(alertId)}/${action}`;
+/** "Yes, laser inspection": the backend starts waiting for new wear values and notifies Kafka (action: inspection). */
+export const confirmInspection = (alertId: string) => postInspection(`alerts/${encodeURIComponent(alertId)}/inspection`);
+/** "Yes, second run": the backend notifies Kafka (action: second_run). */
+export const requestSecondRun = (alertId: string) => postInspection(inspectionPath(alertId, "second-run"));
+export const dismissInspection = (alertId: string) => postInspection(inspectionPath(alertId, "dismiss"));
+/** Demo: pretend the controller reported these wear values after the inspection. */
+export const simulateInspectionWear = (alertId: string, diameter: number, length: number) =>
+  postInspection(inspectionPath(alertId, "simulate-wear"), { diameter, length });
 
 /** Store the quality balloon's tolerance on the backend; returns false when it could not be saved. */
 export async function saveQualitySpec(spec: QualitySpec): Promise<boolean> {
@@ -179,6 +220,18 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
     }
   }
 
+  async function simulateWear(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const alertId = snapshot?.inspection?.alertId;
+    if (!alertId) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    const result = await simulateInspectionWear(alertId, Number(form.get("diameter")), Number(form.get("length")));
+    setMessage(!result ? "Request failed."
+      : result.status === "result_ready" ? "Inspection result ready." : "Those values are the same as before the inspection — enter new values.");
+    setBusy(false);
+  }
+
   async function reset() {
     if (!confirmReset) {
       setConfirmReset(true);
@@ -259,6 +312,18 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
           {snapshot.ncWatch.fallbackSeconds ? ` · fallback ${snapshot.ncWatch.fallbackSeconds} s${snapshot.ncWatch.fallbackPending ? " (armed)" : ""}` : ""}
           {snapshot.ncWatch.lastTriggerAt ? ` · last auto trigger ${new Date(snapshot.ncWatch.lastTriggerAt).toLocaleTimeString()}` : ""}
         </p>
+      )}
+      {!settings && snapshot?.inspection?.status === "awaiting_result" && (
+        <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={simulateWear} data-testid="simulate-wear">
+          <p className="w-full text-[#8296a8]">Laser inspection is waiting for the controller's new wear values.</p>
+          {fields.map(field => (
+            <label key={field}>
+              {field === "diameter" ? "Diameter wear" : "Tool length wear"} (mm)
+              <input className={fieldStyle} name={field} type="number" min="0" step="any" required />
+            </label>
+          ))}
+          <button className={buttonStyle} disabled={busy}>Simulate new wear</button>
+        </form>
       )}
       {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>

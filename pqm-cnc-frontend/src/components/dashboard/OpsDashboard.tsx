@@ -36,8 +36,12 @@ import { OpsAlerts } from "./OpsAlerts";
 import { OpsRecommendations } from "./OpsRecommendations";
 import { OpsSidebar } from "./OpsSidebar";
 import { ToolWearDashboard } from "./ToolWearDashboard";
-import { saveQualitySpec, useWearAlertDemo, WearAlertPopover, type ToolWearAlert } from "./WearAlertDemo";
+import {
+  confirmInspection, dismissInspection, requestSecondRun, saveQualitySpec, useWearAlertDemo, WearAlertPopover,
+  type ToolWearAlert,
+} from "./WearAlertDemo";
 import { WearAlertPopup } from "./WearAlertPopup";
+import { WearInspectionPopup } from "./WearInspectionPopup";
 import type { WearEvent } from "./WearEventLog";
 import { ToolWearTrend } from "./ToolWearTrend";
 import { ProcessContextPanel } from "./ProcessContextPanel";
@@ -142,10 +146,13 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     if (toolWear.length && monitor === "quality") setPendingWearAlerts(previous => [...previous, ...toolWear]);
   }, [wearDemo, monitor]);
   const dismissWearAlerts = useCallback(() => setPendingWearAlerts([]), []);
-  const confirmWearAlerts = useCallback(() => {
+  // "Yes, laser inspection": the backend notifies Kafka and waits for the controller's new wear values.
+  const confirmWearAlerts = useCallback((alert: ToolWearAlert) => {
     setPendingWearAlerts([]);
-    setMonitor("tool-wear");
+    void confirmInspection(alert.alertId);
   }, []);
+  const secondRun = useCallback((alertId: string) => { void requestSecondRun(alertId); }, []);
+  const dismissInspectionResult = useCallback((alertId: string) => { void dismissInspection(alertId); }, []);
   // Start on the live quality balloon (B9): its trend is visible right away.
   const initialInspectId =
     seed.balloons.find((b) => b.id === DEFAULT_QUALITY_BALLOON_ID)?.id ??
@@ -460,9 +467,10 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   return (
     <div className="flex min-h-[100dvh] bg-[#0b111b] text-foreground">
       {monitor === "quality" && (
-        <WearAlertPopup alerts={pendingWearAlerts} destinations={wearDemo?.destinations}
+        <WearAlertPopup alerts={pendingWearAlerts} destinations={wearDemo?.destinations?.filter(name => name !== "kafka")}
           onConfirm={confirmWearAlerts} onDismiss={dismissWearAlerts} />
       )}
+      <WearInspectionPopup inspection={wearDemo?.inspection} onSecondRun={secondRun} onDismiss={dismissInspectionResult} />
       <OpsSidebar onMonitorChange={setMonitor} />
       <div className="flex min-w-0 flex-1 flex-col">
         <JobContextHeader
