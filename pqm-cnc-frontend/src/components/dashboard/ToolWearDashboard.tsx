@@ -17,11 +17,23 @@ const DEFAULT_TOOL = "25";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HISTORY_DAYS = 7;
 
+/** YYYY-MM-DD of a moment in the browser's local time zone (the chart labels are local too). */
+function localDate(ms: number) {
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Query bounds for a range of local calendar days: local midnight of the first day up to (excluding) local midnight
+ * after the last day. Local, not UTC, so the data matches the dates the chart labels show.
+ */
 function dateBounds(start: string, end: string) {
-  return {
-    start: new Date(`${start}T00:00:00Z`).toISOString(),
-    end: new Date(Date.parse(`${end}T00:00:00Z`) + DAY_MS).toISOString(),
-  };
+  const [sy, sm, sd] = start.split("-").map(Number) as [number, number, number];
+  const [ey, em, ed] = end.split("-").map(Number) as [number, number, number];
+  const from = new Date(sy, sm - 1, sd).getTime();
+  // Never longer than the backend's 7 days, even across a daylight-saving change.
+  const to = Math.min(new Date(ey, em - 1, ed + 1).getTime(), from + HISTORY_DAYS * DAY_MS);
+  return { start: new Date(from).toISOString(), end: new Date(to).toISOString() };
 }
 
 const METRICS = [
@@ -95,8 +107,8 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
   useEffect(() => {
     const timer = setTimeout(() => {
       const now = Date.now();
-      const end = new Date(now).toISOString().slice(0, 10);
-      const start = new Date(now - (HISTORY_DAYS - 1) * DAY_MS).toISOString().slice(0, 10);
+      const end = localDate(now);
+      const start = localDate(new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate() - (HISTORY_DAYS - 1)).getTime());
       setDates({ start, end });
       setBounds(dateBounds(start, end));
     }, 0);
@@ -110,7 +122,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
       return false;
     }
     const nextBounds = dateBounds(next.start, next.end);
-    if (Date.parse(nextBounds.end) - Date.parse(nextBounds.start) > HISTORY_DAYS * DAY_MS) {
+    if ((Date.parse(`${next.end}T00:00:00Z`) - Date.parse(`${next.start}T00:00:00Z`)) / DAY_MS + 1 > HISTORY_DAYS) {  // calendar days
       setRangeError("Choose a range of up to 7 days.");
       return false;
     }
@@ -234,11 +246,11 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
             <ResizableToolBlock id="wear-history" width={520} height={380} locked={locked} fillWidth>
               <Panel title={`Predicted wear history · ${toolLabel(selectedTool)}`} bodyClassName="flex flex-col gap-2" titleRight={
                 <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[#8296a8]">
-                  <input aria-label="Wear history start date (UTC)" type="date" value={dates.start}
+                  <input aria-label="Wear history start date" type="date" value={dates.start}
                     onChange={event => changeDate("start", event.target.value)}
                     className="min-w-0 rounded border border-[#314254] bg-[#0c1722] px-1 py-1 text-[#c6d7e4]" />
                   <span aria-hidden="true">–</span>
-                  <input aria-label="Wear history end date (UTC)" type="date" value={dates.end}
+                  <input aria-label="Wear history end date" type="date" value={dates.end}
                     onChange={event => changeDate("end", event.target.value)}
                     className="min-w-0 rounded border border-[#314254] bg-[#0c1722] px-1 py-1 text-[#c6d7e4]" />
                   <button type="button" onClick={refresh} disabled={history.fetching} aria-label="Refresh wear history"

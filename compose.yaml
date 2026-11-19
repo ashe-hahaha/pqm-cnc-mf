@@ -4,8 +4,13 @@ services:
     ports:
       - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-3001}:3001"
     environment:
-      - LLM_BASE_URL
-      - STT_URL
+      # Copilot: Ollama and the Whisper sidecar run on the Docker host, not in a container. Inside the container
+      # "localhost" is the container itself, so default to the host gateway. Override in .env if they live elsewhere.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:32b}
+      STT_URL: ${STT_URL:-http://host.docker.internal:8765}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - machining-data:/app/pqm-cnc-frontend/data/MachiningData
       - balloon-layouts:/app/pqm-cnc-frontend/data/pqm

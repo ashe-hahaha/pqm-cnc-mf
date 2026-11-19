@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import httpx
 import sqlite3
@@ -26,7 +27,7 @@ def test_predictions_cycle_through_series_and_persist_cursor(tmp_path):
     first = service.record(MockPrediction())["prediction"]
     assert (first["index"], first["toolNo"]) == (1, "25")
     assert (first["diameter"], first["length"], first["quality"]) == PREDICTION_SERIES[0]
-    assert first["balloonId"] == "b1"
+    assert first["balloonId"] == "b9"
 
     restarted = WearAlerts(settings)
     assert restarted.snapshot()["nextIndex"] == 2
@@ -131,7 +132,7 @@ def test_quality_alert_follows_the_stored_tolerance(tmp_path):
     # Default spec 18 ± 0.1 mm: #9 (18.0088) is fine, #10 (18.15) is above USL 18.1.
     assert service.record(MockPrediction(index=9))["qualityAlert"] is None
     alert = service.record(MockPrediction(index=10))["qualityAlert"]
-    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b1", "upper", 18.15, 18.1)
+    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "upper", 18.15, 18.1)
 
     # A wider tolerance makes the same value acceptable again.
     service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.2, lowerTol=0.1))
@@ -414,6 +415,65 @@ def test_prediction_delay_comes_from_the_setting(tmp_path):
 
     assert asyncio.run(run(0)) < 0.15
     assert asyncio.run(run(0.3)) >= 0.29
+
+
+def test_stale_pending_notifications_expire_and_are_logged(tmp_path):
+    settings, service = make_service(tmp_path)
+    service.set_thresholds(WearValues(diameter=0.1, length=999))
+    old, fresh = service.record(MockPrediction(index=10))["alert"], service.record(MockPrediction(index=10))["alert"]
+    # Make the first notification 11 minutes old (limit: 10 minutes).
+    with closing(sqlite3.connect(service.path)) as db, db:
+        body, seq = db.execute("SELECT body, seq FROM outbox WHERE body LIKE ?", (f'%{old["alertId"]}%',)).fetchone()
+        event = json.loads(body)
+        event["timestampUtc"] = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
+        db.execute("UPDATE outbox SET body=? WHERE seq=?", (json.dumps(event), seq))
+    assert settings.tool_wear_alert_expire_seconds == 600 and service.snapshot()["pendingNotifications"] == 2
+
+    settings.tool_wear_alert_expire_seconds = 0                        # 0 = never expire
+    with closing(sqlite3.connect(service.path)) as db:
+        service.expire_outbox(db, "kafka")
+    assert service.snapshot()["pendingNotifications"] == 2
+
+    settings.tool_wear_alert_expire_seconds = 600
+    with closing(sqlite3.connect(service.path)) as db:
+        service.expire_outbox(db, "temi")                              # another destination's queue is not touched
+        assert service.snapshot()["pendingNotifications"] == 2
+        service.expire_outbox(db, "kafka")
+    assert service.snapshot()["pendingNotifications"] == 1             # only the fresh one is left
+    with closing(sqlite3.connect(service.path)) as db:
+        assert fresh["alertId"] in db.execute("SELECT body FROM outbox").fetchone()[0]
+    expired = [e for e in service.snapshot()["events"] if e["label"] == "Notification expired"]
+    assert len(expired) == 1 and "Kafka" in expired[0]["detail"] and "1 older than 10 min" in expired[0]["detail"]
+
+    with closing(sqlite3.connect(service.path)) as db:
+        service.expire_outbox(db, "kafka")                             # nothing more to drop, no extra event
+    assert len([e for e in service.snapshot()["events"] if e["label"] == "Notification expired"]) == 1
+
+
+def test_the_delivery_loop_drops_expired_notifications_instead_of_sending_them(tmp_path):
+    async def run():
+        settings, service = make_service(tmp_path)
+        service.set_thresholds(WearValues(diameter=0.1, length=999))
+        alert = service.record(MockPrediction(index=10))["alert"]
+        with closing(sqlite3.connect(service.path)) as db, db:
+            body, seq = db.execute("SELECT body, seq FROM outbox").fetchone()
+            event = json.loads(body)
+            event["timestampUtc"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            db.execute("UPDATE outbox SET body=? WHERE seq=?", (json.dumps(event), seq))
+        sent = []
+
+        async def publish(event):
+            sent.append(event["alertId"])
+        service.publish = publish
+        task = asyncio.create_task(service.deliver("kafka"))
+        await asyncio.sleep(0.2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert sent == [] and alert["alertId"]
+        assert service.snapshot()["pendingNotifications"] == 0
+        assert [e["label"] for e in service.snapshot()["events"]].count("Notification expired") == 1
+
+    asyncio.run(run())
 
 
 def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):

@@ -223,7 +223,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
               <option value="auto">Auto{snapshot?.nextIndex ? ` (next: #${snapshot.nextIndex})` : ""}</option>
               {(snapshot?.series ?? []).map(item => (
                 <option key={item.index} value={item.index}>
-                  #{item.index} · Diameter {item.diameter} · Length {item.length} · B1 {item.quality ?? "–"} mm
+                  #{item.index} · Diameter {item.diameter} · Length {item.length} · {(snapshot?.qualityBalloonId ?? "b9").toUpperCase()} {item.quality ?? "–"} mm
                 </option>
               ))}
             </select>

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SERIES_SPEC,
   qualityPredictionFromHistory,
   qualityRisk,
   qualityTrendFromHistory,
+  seriesHistory,
 } from "./qualityPredictions";
 
 const b1 = { id: "b1", nominal: 0, upperTol: 0.02, lowerTol: 0, unit: "mm" };
@@ -50,5 +52,22 @@ describe("quality predictions from backend history", () => {
     const wider = { ...b1, upperTol: 0.05 };
     expect(qualityTrendFromHistory([at(0.027, 10)], wider)[0]!.usl).toBe(0.05);
     expect(qualityRisk(0.027, wider)).toBe("pass");
+  });
+});
+
+describe("seriesHistory (fixed record of the balloons that are not live)", () => {
+  it("keeps every series entry in order with a constant timestamp", () => {
+    const history = seriesHistory([{ index: 1, quality: 18.005 }, { index: 2, quality: 18.15 }, { index: 3 }]);
+    expect(history.map((p) => p.index)).toEqual([1, 2, 3]);
+    expect(new Set(history.map((p) => p.timestampUtc)).size).toBe(1);
+    expect(seriesHistory(undefined)).toEqual([]);
+  });
+
+  it("plots against the default 18 ± 0.1 tolerance and follows a hand-set one", () => {
+    const history = seriesHistory([{ index: 9, quality: 18.0088 }, { index: 10, quality: 18.15 }]);
+    const balloon = { id: "b3", unit: "mm", ...DEFAULT_SERIES_SPEC };
+    const trend = qualityTrendFromHistory(history, balloon);
+    expect(trend.map((p) => [p.usl, p.lsl])).toEqual([[18.1, 17.9], [18.1, 17.9]]);
+    expect(qualityTrendFromHistory(history, { ...balloon, upperTol: 0.2 })[1].usl).toBe(18.2);
   });
 });

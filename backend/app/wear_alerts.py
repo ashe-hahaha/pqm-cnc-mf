@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.signals import sse
-from app.wear_series import DEFAULT_QUALITY_SPEC, PREDICTION_SERIES, QUALITY_BALLOON_ID, TOOL_NO
+from app.wear_series import (DEFAULT_QUALITY_SPEC, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
+                             TOOL_NO)
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/tool-wear/demo")
@@ -240,7 +241,7 @@ class WearAlerts:
             spec = self.get_quality_spec(db)
             lsl, usl = spec.nominal - spec.lowerTol, spec.nominal + spec.upperTol
             in_spec = lsl - 1e-9 <= value <= usl + 1e-9
-            # Demo setting: a measurement outside the B1 tolerance is shown as a fixed passing value instead.
+            # Demo setting: a measurement outside the quality balloon's tolerance is shown as a fixed passing value instead.
             masked = not in_spec and self.settings.tool_wear_qc_mask_out_of_spec
             shown = self.settings.tool_wear_qc_pass_value if masked else value
             qc = {"value": shown, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
@@ -319,7 +320,7 @@ class WearAlerts:
         service = self
         prediction = result["prediction"]
         service.log_event("Prediction completed", TOOL_NO, timestamp=prediction["timestampUtc"],
-                          detail=f'#{prediction["index"]} · Diameter {prediction["diameter"]} mm · Length {prediction["length"]} mm · B1 {prediction["quality"]} mm')
+                          detail=f'#{prediction["index"]} · Diameter {prediction["diameter"]} mm · Length {prediction["length"]} mm · {QUALITY_BALLOON_CODE} {prediction["quality"]} mm')
         alert = result["alert"]
         if alert:
             detail = " · ".join(
@@ -460,9 +461,40 @@ class WearAlerts:
             self.log_event("Notification failed", event["toolNo"],
                            detail=f"{self.destination_label(destination)} · {type(exc).__name__} · attempt {attempts + 1}")
 
+    def expire_outbox(self, db, destination):
+        """Drop pending notifications older than `tool_wear_alert_expire_seconds` (0 = keep forever).
+
+        A stale alert is not worth sending (e.g. a robot trigger long after the event), so a destination that was
+        down for a while does not replay its whole backlog when it comes back. One event per sweep is logged.
+        """
+        limit = self.settings.tool_wear_alert_expire_seconds
+        if limit <= 0:
+            return
+        now = datetime.now(timezone.utc)
+        expired = []
+        for seq, body in db.execute("SELECT seq, body FROM outbox WHERE destination=?", (destination,)).fetchall():
+            event = json.loads(body)
+            try:
+                age = (now - datetime.fromisoformat(event["timestampUtc"])).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if age > limit:
+                expired.append((seq, event))
+        if not expired:
+            return
+        with db:
+            db.executemany("DELETE FROM outbox WHERE seq=?", [(seq,) for seq, _ in expired])
+        for _, event in expired:
+            self.last_failure_event.pop((event["alertId"], destination), None)
+        logger.warning("Tool wear alert notifications expired destination=%s count=%s older_than=%ss",
+                       destination, len(expired), limit)
+        self.log_event("Notification expired", expired[0][1]["toolNo"],
+                       detail=f"{self.destination_label(destination)} · {len(expired)} older than {limit / 60:g} min, dropped")
+
     async def deliver(self, destination):
         with closing(sqlite3.connect(self.path)) as db:
             while True:
+                self.expire_outbox(db, destination)
                 row = db.execute(
                     "SELECT seq, body, attempts FROM outbox WHERE destination=? AND due<=unixepoch() ORDER BY seq LIMIT 1",
                     (destination,),

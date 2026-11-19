@@ -1,16 +1,19 @@
 """Fixed mock prediction series for the demo.
 
 Each manual trigger consumes one entry (cycling through all of them) and produces one tool wear
-prediction (diameter, length) plus one quality prediction for a single balloon. Replace the values
-below with the real series when it is available; the UI reads the list from the snapshot.
+prediction (diameter, length) plus one quality prediction for a single "live" balloon. The other
+balloons of the demo drawing are treated as already machined: the UI shows this same series for them
+as a fixed, finished record that triggers never change. Replace the values below with the real series
+when it is available; the UI reads the list from the snapshot.
 """
 
 TOOL_NO = "25"
-QUALITY_BALLOON_ID = "b1"  # B1: Datum A flatness
-# (nominal, +upper, -lower) B1 starts with: 18 ± 0.1 mm, i.e. 17.9 … 18.1 (editable in the UI, then stored by the backend)
+QUALITY_BALLOON_ID = "b9"  # the one balloon whose quality prediction is live (changes on every trigger)
+QUALITY_BALLOON_CODE = QUALITY_BALLOON_ID.upper()  # shown in events and notifications
+# (nominal, +upper, -lower) every balloon starts with (the UI uses the same default for the fixed ones): 18 ± 0.1 mm, i.e. 17.9 … 18.1 (editable in the UI, then stored by the backend)
 DEFAULT_QUALITY_SPEC = (18.0, 0.1, 0.1)
 
-# (diameter wear mm, tool length wear mm, B1 value mm: 18 + the earlier flatness values)
+# (diameter wear mm, tool length wear mm, quality value mm: 18 + the earlier flatness values)
 PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
     # 1-9: normal, small and slowly drifting values
     (0.050, 0.020, 18.0050),
@@ -22,6 +25,6 @@ PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
     (0.065, 0.027, 18.0079),
     (0.067, 0.028, 18.0092),
     (0.070, 0.030, 18.0088),
-    # 10: abnormal, clearly higher than the rest (B1 above the 18.1 mm upper limit)
+    # 10: abnormal, clearly higher than the rest (quality above the 18.1 mm upper limit)
     (0.350, 0.180, 18.1500),
 )

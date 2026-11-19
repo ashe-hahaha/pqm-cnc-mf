@@ -53,12 +53,15 @@ class Settings(BaseSettings):
     tool_wear_alert_temi_enabled: bool = False
     tool_wear_alert_temi_url: str = ""
     tool_wear_alert_temi_token: SecretStr = SecretStr("")
+    # A notification still unsent after this many seconds is dropped (0 = never), so a destination that was down
+    # does not replay old alerts when it comes back.
+    tool_wear_alert_expire_seconds: float = Field(default=600, ge=0)
     # Controller NC line values (comma separated) that start a prediction when the line changes to one of them
     # (the field name is fixed in wear_alerts.NC_LINE_FIELD). Entering 73-74 also triggers (wear_alerts.NC_RANGE_*).
     tool_wear_nc_trigger_values: str = "29"
     # After a trigger value fires, trigger once more if no 73-74 trigger follows within this many seconds (0 = off).
     tool_wear_nc_fallback_seconds: float = Field(default=120, ge=0)
-    # Demo: a QC value (NC line 93, macro 956) outside the B1 tolerance is shown as `tool_wear_qc_pass_value` instead.
+    # Demo: a QC value (NC line 93, macro 956) outside the quality balloon (B9) tolerance is shown as `tool_wear_qc_pass_value` instead.
     tool_wear_qc_mask_out_of_spec: bool = True
     # Simulated prediction time between "Prediction started" and "Prediction completed" (0 = immediately).
     tool_wear_prediction_delay_seconds: float = Field(default=0, ge=0)

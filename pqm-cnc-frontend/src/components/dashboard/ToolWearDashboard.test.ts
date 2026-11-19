@@ -125,14 +125,15 @@ it("refreshes the history on demand with the dates currently chosen, without pol
   const button = () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh wear history"]')!;
   expect(button().textContent).toBe("Refresh");
 
-  const end = host.querySelector<HTMLInputElement>('input[aria-label="Wear history end date (UTC)"]')!;
+  const end = host.querySelector<HTMLInputElement>('input[aria-label="Wear history end date"]')!;
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   await act(async () => { setValue.call(end, "2026-11-03"); end.dispatchEvent(new Event("input", { bubbles: true })); });
   await act(async () => button().click());
   expect(historyState.reload).toHaveBeenCalledTimes(1);
   const [, start, until] = historyCalls.at(-1)!;
-  expect(String(start)).toBe("2026-10-29T00:00:00.000Z");
-  expect(String(until)).toBe("2026-11-04T00:00:00.000Z");        // the new end date (exclusive next day)
+  // Local calendar days: local midnight of the first day up to local midnight after the chosen end date (exclusive).
+  expect(String(start)).toBe(new Date(2026, 9, 29).toISOString());
+  expect(String(until)).toBe(new Date(2026, 10, 4).toISOString());
 
   await act(async () => vi.advanceTimersByTimeAsync(60_000));
   expect(historyState.reload).toHaveBeenCalledTimes(1);           // nothing else triggers a request

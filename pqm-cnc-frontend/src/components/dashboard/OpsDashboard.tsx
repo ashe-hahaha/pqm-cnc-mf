@@ -51,9 +51,12 @@ import {
   type Tolerance,
 } from "@/lib/balloonTolerance";
 import {
+  DEFAULT_QUALITY_BALLOON_ID,
+  DEFAULT_SERIES_SPEC,
   qualityPredictionFromHistory,
   qualityRisk,
   qualityTrendFromHistory,
+  seriesHistory,
 } from "@/lib/qualityPredictions";
 import { useMachiningSim } from "@/sim/useMachiningSim";
 
@@ -143,9 +146,9 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     setPendingWearAlerts([]);
     setMonitor("tool-wear");
   }, []);
-  // Start on B1: it is the balloon driven by the prediction series, so its trend is visible right away.
+  // Start on the live quality balloon (B9): its trend is visible right away.
   const initialInspectId =
-    seed.balloons.find((b) => b.id === "b1")?.id ??
+    seed.balloons.find((b) => b.id === DEFAULT_QUALITY_BALLOON_ID)?.id ??
     seed.job.currentBalloonId ??
     seed.balloons[0]?.id ??
     null;
@@ -296,7 +299,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   useEffect(() => { setTolerances(readTolerances()); }, []);
   const handleToleranceChange = useCallback((balloonId: string, tolerance: Tolerance) => {
     // The quality balloon's tolerance lives on the backend, which uses it for every prediction trigger.
-    if (balloonId === (wearDemo?.qualityBalloonId ?? "b1")) void saveQualitySpec(tolerance);
+    if (balloonId === (wearDemo?.qualityBalloonId ?? DEFAULT_QUALITY_BALLOON_ID)) void saveQualitySpec(tolerance);
     setTolerances((previous) => {
       const next = { ...previous, [balloonId]: tolerance };
       writeTolerances(next);
@@ -304,17 +307,25 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     });
   }, [wearDemo?.qualityBalloonId]);
   const backendQualitySpec = wearDemo?.qualitySpec;
+  const fixedSeries = useMemo(() => seriesHistory(wearDemo?.series), [wearDemo?.series]);
+  const hasFixedSeries = fixedSeries.some((point) => typeof point.quality === "number");
   const latestQuality = wearDemo?.history?.findLast((point) => typeof point.quality === "number")?.quality;
   const allBalloons = useMemo(() => {
-    const qualityId = wearDemo?.qualityBalloonId ?? "b1";
-    const toleranced = applyTolerances(data.balloons, backendQualitySpec
+    const qualityId = wearDemo?.qualityBalloonId ?? DEFAULT_QUALITY_BALLOON_ID;
+    // The other drawing balloons are treated as finished and show the fixed series with this default tolerance
+    // (until the user sets their own).
+    const withDefaults = hasFixedSeries
+      ? data.balloons.map((b) => b.source === "manual" && b.id !== qualityId && !tolerances[b.id]
+        ? { ...b, ...DEFAULT_SERIES_SPEC } : b)
+      : data.balloons;
+    const toleranced = applyTolerances(withDefaults, backendQualitySpec
       ? { ...tolerances, [qualityId]: backendQualitySpec } : tolerances);
-    // Every other balloon passes in the simulation; the quality balloon's colour follows its latest prediction.
+    // Every other balloon passes in the simulation; the live quality balloon's colour follows its latest prediction.
     return typeof latestQuality === "number"
       ? toleranced.map((b) => b.id === qualityId && b.risk !== "not_machined"
         ? { ...b, risk: qualityRisk(latestQuality, b) } : b)
       : toleranced;
-  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, latestQuality]);
+  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, latestQuality, hasFixedSeries]);
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),
@@ -354,24 +365,30 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     if (status.phase === "review") setReviewProcessId(id);
   }
 
-  // The quality balloon (B1) is driven by the backend's fixed prediction series instead of simulated data.
+  // The live quality balloon (B9) is driven by the backend's prediction series instead of simulated data.
+  // The other manual balloons show the whole series as a finished record (it never changes).
   const qualityHistory = wearDemo?.history;
-  const qualityBalloonId = wearDemo?.qualityBalloonId ?? "b1";
+  const qualityBalloonId = wearDemo?.qualityBalloonId ?? DEFAULT_QUALITY_BALLOON_ID;
   // Always the balloon with the user's tolerance applied (inspect holds a snapshot from selection time).
   const inspectBalloon = useMemo(
     () => (inspect ? allBalloons.find((b) => b.id === inspect.balloon.id) ?? inspect.balloon : null),
     [inspect, allBalloons],
   );
   const isQualityBalloon = inspectBalloon != null && inspectBalloon.id === qualityBalloonId;
+  const isFixedSeriesBalloon = !isQualityBalloon && hasFixedSeries && inspectBalloon?.source === "manual";
   const qualityTrend = useMemo(
-    () => (isQualityBalloon && inspectBalloon ? qualityTrendFromHistory(qualityHistory ?? [], inspectBalloon) : []),
-    [isQualityBalloon, inspectBalloon, qualityHistory],
+    () => (inspectBalloon && (isQualityBalloon || isFixedSeriesBalloon)
+      ? qualityTrendFromHistory(isQualityBalloon ? qualityHistory ?? [] : fixedSeries, inspectBalloon)
+      : []),
+    [isQualityBalloon, isFixedSeriesBalloon, inspectBalloon, qualityHistory, fixedSeries],
   );
   const detailPrediction = useMemo(
     () => (isQualityBalloon && inspectBalloon
       ? qualityPredictionFromHistory(qualityHistory ?? [], inspectBalloon, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc)
-      : inspect?.prediction ?? null),
-    [isQualityBalloon, inspect, inspectBalloon, qualityHistory, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc],
+      : isFixedSeriesBalloon && inspectBalloon
+        ? qualityPredictionFromHistory(fixedSeries, inspectBalloon)
+        : inspect?.prediction ?? null),
+    [isQualityBalloon, isFixedSeriesBalloon, inspect, inspectBalloon, qualityHistory, fixedSeries, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc],
   );
   const detailBalloon = useMemo(
     () => (isQualityBalloon && inspectBalloon && detailPrediction
@@ -610,7 +627,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                   points={qualityTrend}
                   emptyMessage={isQualityBalloon
                     ? "No prediction yet — trigger one from the flask icon in the top bar."
-                    : "No trend series for this balloon — select B1 to see the prediction series."}
+                    : "No trend series for this balloon."}
                 />
               </DashBox>
               <DashBox
@@ -666,7 +683,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <Source label="G-code" />
             <Source label="CMM (sampling)" />
             <span className="normal-case tracking-normal text-[#8fa3b5]">
-              {monitor === 'quality' ? 'Sim · 8s/balloon · Next/N loads piece · B1 follows its prediction' : 'Tool wear demo · diameter and tool length predictions are simulated'}
+              {monitor === 'quality' ? 'Sim · 8s/balloon · Next/N loads piece · B9 follows its prediction' : 'Tool wear demo · diameter and tool length predictions are simulated'}
             </span>
           </div>
           <p>All times are synchronized to machine time</p>
