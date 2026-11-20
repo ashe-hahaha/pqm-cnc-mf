@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { signalsStore, useSignalsLive } from "./signalsLive";
 import { toolKey } from "./toolNumber";
 
 export type ControllerRow = {
-  timestamp: string; tool_no?: number | string | null;
+  timestamp: string; fanuc_raw_id?: string | null; tool_no?: number | string | null; nc_line?: number | string | null;
   feed_rate?: number | null; spindle_speed?: number | null;
   AP?: number | null; AE?: number | null;
   xWearMm?: number | null; zWearMm?: number | null;
@@ -17,37 +18,30 @@ export function controllerOffset(row: ControllerRow | undefined, axis: "x" | "z"
   return { wear: valid(wear) ? wear : null, geometry: valid(geometry) ? geometry : null,
     offset: valid(wear) && valid(geometry) ? wear + geometry : null };
 }
+/**
+ * Controller rows from the shared live signals connection (see signalsLive.ts). `rows` is the trailing window, oldest
+ * first. `onSamples` gets the rows of each frame (all of them first, then only the new or changed ones).
+ */
 export function useControllerData(keepToolSnapshots = false, onSamples?: (rows: ControllerRow[], receivedAt: string, machine: string) => void) {
-  const [rows, setRows] = useState<ControllerRow[]>([]);
+  const { process: rows, status } = useSignalsLive();
   const [latestByTool, setLatestByTool] = useState<Record<string, ControllerRow & { receivedAt: string }>>({});
-  const [status, setStatus] = useState("connecting");
-  useEffect(() => {
-    const base = process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000";
-    const machine = process.env.NEXT_PUBLIC_SIGNALS_MACHINE_ID;
-    const source = new EventSource(`${base.replace(/\/$/, "")}/api/signals/stream${machine ? `?machine_id=${encodeURIComponent(machine)}` : ""}`);
-    source.addEventListener("signals", event => {
-      const receivedAt = new Date().toISOString();
-      const batch = JSON.parse((event as MessageEvent).data);
-      const records: ControllerRow[] = (batch.process ?? []).slice().sort((a: ControllerRow, b: ControllerRow) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-      setRows(records);
-      if (records.length) onSamples?.(records, receivedAt, batch.machine_id ?? machine ?? "");
-      if (keepToolSnapshots && records.length) setLatestByTool(previous => {
-        const next = { ...previous };
-        for (const record of records) {
-          const key = toolKey(record.tool_no);
-          const current = next[key];
-          const timestamp = Date.parse(record.timestamp);
-          const currentTimestamp = current ? Date.parse(current.timestamp) : -Infinity;
-          if (timestamp >= currentTimestamp) {
-            next[key] = { ...record, receivedAt: timestamp === currentTimestamp ? current.receivedAt : receivedAt };
-          }
+  const onSamplesRef = useRef(onSamples);
+  useEffect(() => { onSamplesRef.current = onSamples; }, [onSamples]);
+  useEffect(() => signalsStore.subscribeRows((records, receivedAt, machine) => {
+    onSamplesRef.current?.(records, receivedAt, machine);
+    if (keepToolSnapshots) setLatestByTool(previous => {
+      const next = { ...previous };
+      for (const record of records) {
+        const key = toolKey(record.tool_no);
+        const current = next[key];
+        const timestamp = Date.parse(record.timestamp);
+        const currentTimestamp = current ? Date.parse(current.timestamp) : -Infinity;
+        if (timestamp >= currentTimestamp) {
+          next[key] = { ...record, receivedAt: timestamp === currentTimestamp ? current.receivedAt : receivedAt };
         }
-        return next;
-      });
+      }
+      return next;
     });
-    source.addEventListener("status", event => setStatus(JSON.parse((event as MessageEvent).data).state));
-    source.onerror = () => setStatus("unavailable");
-    return () => source.close();
-  }, [keepToolSnapshots, onSamples]);
+  }), [keepToolSnapshots]);
   return { rows, status, latestByTool };
 }

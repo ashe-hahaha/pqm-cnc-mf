@@ -1,14 +1,15 @@
 import asyncio
+import json
 from datetime import datetime, timezone
 from threading import Lock
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, Request, Query, HTTPException
+from fastapi import FastAPI, Request, Query, HTTPException, WebSocket, WebSocketDisconnect
 from uuid import UUID
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
-from app.signals import SignalHub, sse
+from app.signals import SignalHub, json_safe, sse
 
 from app.config import Settings
 from app.models import Hierarchy
@@ -86,6 +87,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return StreamingResponse(events(), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
         })
+
+    @app.websocket("/api/signals/ws")
+    async def signals_ws(websocket: WebSocket, machine_id: str | None = Query(default=None, min_length=1, max_length=128)):
+        """Live signals for the dashboard: a `snapshot` (the whole window), then `delta` frames with only the new or
+        changed points and process rows, plus `status`. A `ping` every 15 s keeps proxies open; clients send nothing."""
+        await websocket.accept()
+        try:
+            async with websocket.app.state.signals.subscribe(machine_id or settings.signals_machine_id, stream=True) as queue:
+                async def listen():  # returns when the browser goes away
+                    try:
+                        while True:
+                            await websocket.receive_text()
+                    except (WebSocketDisconnect, RuntimeError):
+                        return
+
+                watcher = asyncio.create_task(listen())
+                try:
+                    while True:
+                        getter = asyncio.create_task(queue.get())
+                        done, _ = await asyncio.wait({getter, watcher}, timeout=15, return_when=asyncio.FIRST_COMPLETED)
+                        if watcher in done:
+                            getter.cancel()
+                            break
+                        if getter in done:
+                            event, payload = getter.result()
+                        else:
+                            getter.cancel()
+                            event, payload = "ping", {}
+                        await websocket.send_text(json.dumps({"type": event, **json_safe(payload)}, allow_nan=False))
+                finally:
+                    watcher.cancel()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
 
     @app.get("/api/tool-wear/history")
     async def tool_wear_history(request: Request,

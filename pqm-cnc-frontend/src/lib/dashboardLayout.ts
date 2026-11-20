@@ -14,7 +14,7 @@ export const DEFAULT_DASHBOARD_LAYOUT: DashboardLayout = {
     drawing: 480,
     trend: 280,
     toolWearTrend: 280,
-    process: 620,
+    process: 940,
     recommendations: 240,
     detail: 280,
     alerts: 220,

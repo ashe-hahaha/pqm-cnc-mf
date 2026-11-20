@@ -39,6 +39,10 @@ docker compose cp ./pqm/. frontend:/app/pqm-cnc-frontend/data/pqm/
 docker compose exec -u root frontend chown -R node:node data/MachiningData data/pqm
 ```
 
+## 实时信号 WebSocket
+
+dashboard 通过 `/backend/api/signals/ws` 接收实时信号（Next 代理转发 WebSocket，与 `/cctv/ws` 相同）。若前面还有 Nginx 等反向代理，需放行 `Upgrade` / `Connection` 头并适当加大 `proxy_read_timeout`（backend 每 15 秒发 ping）。页面为 HTTPS 时自动使用 wss。backend 和 frontend 镜像都需要重新构建。可选变量见 `backend/.env.example` 的 `SIGNALS_MODE`、`SIGNALS_ENVIRONMENT`、`SIGNALS_LIVE_TIMEOUT_SECONDS`。
+
 ## Copilot 与语音
 
 Copilot 由前端容器里的 `/api/copilot` 调 Ollama，语音由 `/api/voice/stt`、`/api/voice/tts` 调 Whisper sidecar。这两个服务不在 Compose 里，默认跑在 Docker 宿主机上。容器里的 `localhost` 是容器自己，所以 `compose.yaml` 默认把地址指向 `host.docker.internal`（已加 `extra_hosts: host-gateway`），无需额外设置。Ollama 不可达时 Copilot 会退回脚本式回答，页面仍能用，但不再理解自由提问。

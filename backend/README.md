@@ -62,7 +62,17 @@ backend 连接 `SIGNALS_WS_URL`（默认 `ws://172.20.114.237:4000/ws`），每�
 - 每 15 秒无事件时发 SSE heartbeat；上游异常保留上次图表并持续重试。相同数据不重复推送。
 - 同一进程内同一机床共用采集任务，最后一个订阅断开后取消任务。demo 使用单 worker；多 worker 不共享采集任务。
 
-frontend 的 dashboard Process context 信号区已使用 SSE。HMI 页面原有模拟信号未迁移。信号是整台机床的窗口，尚未映射到 balloon；Process context 的 feed/spindle 以及 Tool Wear 的 wear/geometry/offset 使用 controller 数据；Tool Wear 趋势图当前使用文末 HTTP history 数据源。图表显示 M4 包络，单位待上游确认，不假定为 V 或 dB。
+### 浏览器 WebSocket（dashboard 使用）
+
+`WS /api/signals/ws?machine_id=Makino_01` 向浏览器推送实时信号。frontend 经 Next 代理 `/backend` 连接，全页共用一个连接。
+
+- 默认 `SIGNALS_MODE=live`：backend 对上游 `/ws/live` 订阅一次（`window_ms=10000`、vibration XYZ + AE RMS、`include_process`），约每 500 ms 收到整个窗口；`SIGNALS_ENVIRONMENT` 对应上游 `?environment=real|test`。`SIGNALS_MODE=snapshot` 回到逐轮 `/ws` 查询。
+- 浏览器帧：`snapshot`（整个窗口，连接时及重连后）、`delta`（只含新增/变化的 bucket 与 controller 行）、`status`、每 15 秒 `ping`。上游 `idle` 保活时保留上次图形，状态标为 stale。慢客户端队列溢出时丢弃积压并补发一个 `snapshot`。
+- 上游 `SIGNALS_LIVE_TIMEOUT_SECONDS` 内无任何帧则重连，退避 1→30 秒。有浏览器订阅期间才采集；最后一个断开后取消。
+- SSE `/api/signals/stream` 保留，行为不变。WebSocket 端点不检查 Origin，与 SSE 一致，由部署网络限制访问。
+- frontend 仍保留原有 5 秒兜底轮询，未改动。
+
+frontend 的 dashboard Process context 信号区（四个 channel 分行显示）和 controller 数据已使用上面的 WebSocket。HMI 页面原有模拟信号未迁移。信号是整台机床的窗口，尚未映射到 balloon；Process context 的 feed/spindle 以及 Tool Wear 的 wear/geometry/offset 使用 controller 数据；Tool Wear 趋势图当前使用文末 HTTP history 数据源。图表显示 M4 包络，单位待上游确认，不假定为 V 或 dB。
 
 本机启动 backend 后运行 frontend `npm run dev` 即可。可将 frontend `.env.example` 复制为 `.env.local` 自定义 backend URL 和机床；修改后重启 Next.js。其他电脑访问时必须把 `NEXT_PUBLIC_DATA_API_URL` 改为浏览器可达的 backend 地址，并配置 backend `CORS_ORIGINS`；HTTPS 前端需 HTTPS backend。反向代理需关闭 SSE buffering。
 

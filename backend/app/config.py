@@ -16,7 +16,12 @@ class Settings(BaseSettings):
     upstream_timeout_seconds: float = Field(default=10, gt=0, le=120)
     signals_ws_url: str = "ws://172.20.114.237:4000/ws"
     signals_machine_id: str = "Makino_01"
+    # live: one long-lived connection to the upstream /ws/live (pushes about every 500 ms); snapshot: one query per poll.
+    signals_mode: Literal["live", "snapshot"] = "live"
+    signals_environment: Literal["real", "test"] = "real"
+    # snapshot: seconds between queries. live: how long a quiet connection waits before observers are told it is still watched.
     signals_poll_seconds: float = Field(default=2, ge=0.2, le=60)
+    signals_live_timeout_seconds: float = Field(default=60, ge=5)  # live: reconnect when the upstream sends nothing this long
     signals_window_ms: int = Field(default=10000, ge=1, le=300000)
     signals_stale_seconds: float = Field(default=10, ge=1)
     tool_wear_db_url: SecretStr = SecretStr("")
