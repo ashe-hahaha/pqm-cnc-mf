@@ -37,8 +37,8 @@ function Scope({ channel }: { channel: SignalChannel }) {
       const left = state.start + advance, right = state.end + advance;
       let low = Infinity, high = -Infinity;
       for (const p of series.points) { low = Math.min(low, p.min); high = Math.max(high, p.max); }
-      if (channel.startsWith("spindle.vibration_")) { low = -1; high = 1; }
-      else { const m = Math.max((high - low) * 0.08, Math.abs(high) * 0.01, 1e-6); low -= m; high += m; }
+      const m = Math.max((high - low) * 0.08, Math.abs(high) * 0.01, 1e-6);  // every channel autoscales
+      low -= m; high += m;
       const x = (t: number) => PAD_LEFT + (t - left) / (right - left || span) * plotW;
       const y = (v: number) => PAD_Y + (high - v) / (high - low) * plotH;
       ctx.font = "9px sans-serif"; ctx.textAlign = "right"; ctx.fillStyle = "#8fa3b5"; ctx.strokeStyle = "#253342"; ctx.lineWidth = 1;
@@ -46,7 +46,7 @@ function Scope({ channel }: { channel: SignalChannel }) {
         const gy = PAD_Y + f * plotH;
         ctx.beginPath(); ctx.moveTo(PAD_LEFT, gy); ctx.lineTo(PAD_LEFT + plotW, gy); ctx.stroke();
         const v = high - f * (high - low);
-        ctx.fillText(channel.startsWith("spindle.vibration_") ? String(v) : v.toPrecision(3), PAD_LEFT - 4, gy + 3);
+        ctx.fillText(v.toPrecision(3), PAD_LEFT - 4, gy + 3);
       }
       ctx.save();
       ctx.beginPath(); ctx.rect(PAD_LEFT, 0, plotW, height); ctx.clip();
