@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.signals import sse
-from app.wear_series import (DEFAULT_QUALITY_SPEC, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
+from app.wear_series import (DEFAULT_QUALITY_SPEC, FIXED_QUALITY_SERIES, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
 logger = logging.getLogger("uvicorn.error")
@@ -183,6 +183,8 @@ class WearAlerts:
                 "history": [json.loads(row[0]) for row in reversed(history)],
                 "series": [{"index": i + 1, "diameter": d, "length": l, "quality": q}
                            for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
+                "fixedQualitySeries": [{"index": i + 1, "quality": q}
+                                       for i, q in enumerate(FIXED_QUALITY_SERIES)],
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
                 "lastQc": json.loads(last_qc[0]) if last_qc else None,
                 "ncWatch": self.nc_status(),

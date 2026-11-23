@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { toolKey, toolLabel } from "@/lib/toolNumber";
-import { THRESHOLD_NOT_SET, type WearInspection } from "./WearAlertDemo";
+import type { WearInspection } from "./WearAlertDemo";
 
 const METRICS = [
   { key: "diameter", label: "Diameter wear" },
@@ -11,7 +11,7 @@ const METRICS = [
 
 /**
  * Second popup: the controller reported new wear values after the laser inspection. Shows the measured wear against the
- * prediction and the threshold, then asks whether to do a second run.
+ * prediction, then asks whether to do a second run.
  */
 export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
   inspection: WearInspection | null | undefined;
@@ -31,8 +31,6 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
   }, [alertId, result, onDismiss]);
 
   if (!inspection || !result) return null;
-  const limited = METRICS.filter(({ key }) => result.thresholds[key] < THRESHOLD_NOT_SET);
-  const exceeded = limited.some(({ key }) => result.exceeded.includes(key));
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/65 p-4">
       <div role="alertdialog" aria-modal="true" aria-labelledby="wear-inspection-title" aria-describedby="wear-inspection-body"
@@ -45,28 +43,19 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
         </div>
         <ul id="wear-inspection-body" className="mt-3 space-y-1.5 text-xs">
           {METRICS.map(({ key, label }) => {
-            const threshold = result.thresholds[key];
-            const set = threshold < THRESHOLD_NOT_SET;
-            const over = result.exceeded.includes(key);
             return (
               <li key={key} className="rounded border border-[#2a3a4a] bg-[#0e1620] px-2.5 py-1.5">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-[#c6d7e4]">{label}</span>
-                  <span className="tabular-nums text-[#e6f1fa]">{result.actual[key]} mm</span>
+                  <span className="tabular-nums text-[#e6f1fa]">{result.actual[key].toFixed(5)} mm</span>
                 </div>
                 <div className="mt-0.5 flex items-baseline justify-between gap-3 text-[11px] text-[#8fa3b5]">
-                  <span>Predicted {result.predicted[key]} mm · Threshold {set ? `${threshold} mm` : "not set"}</span>
-                  {set && <span className={over ? "text-rose-300" : "text-emerald-300"}>{over ? "Still above threshold" : "Within threshold"}</span>}
+                  <span>Predicted {result.predicted[key].toFixed(5)} mm</span>
                 </div>
               </li>
             );
           })}
         </ul>
-        {limited.length > 0 && (
-          <p className={`mt-2 text-[11px] ${exceeded ? "text-rose-300" : "text-emerald-300"}`}>
-            {exceeded ? "Wear is still above the threshold." : "Wear is back within the threshold."}
-          </p>
-        )}
         <p className="mt-3 text-xs text-[#c6d7e4]">Do you want to perform a second run?</p>
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" onClick={() => onDismiss(inspection.alertId)}

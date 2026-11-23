@@ -3,6 +3,10 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ToolWearDashboard } from "./ToolWearDashboard";
+import type { ControllerRow } from "@/lib/useControllerData";
+
+const controllerSamples = vi.hoisted(() => ({ callback: undefined as
+  ((rows: ControllerRow[], receivedAt: string, machine: string) => void) | undefined }));
 
 it("opens the session event history from the latest event row", async () => {
   const row = () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!;
@@ -30,7 +34,10 @@ vi.mock("@/lib/useToolImage", () => ({ useToolImage: () => ({ status: "connected
 } }) }));
 
 vi.mock("@/lib/useControllerData", () => ({
-  useControllerData: () => ({ status: "live", latestByTool: { "25": { timestamp: "2026-10-29T00:00:00Z", tool_no: 25, receivedAt: "2026-10-29T00:00:01Z", xWearMm: 0.34, zWearMm: 0.19, xGeometryMm: 2, zGeometryMm: 10 } } }),
+  useControllerData: (_keep: boolean, callback: typeof controllerSamples.callback) => {
+    controllerSamples.callback = callback;
+    return { status: "live", latestByTool: { "25": { timestamp: "2026-10-29T00:00:00Z", tool_no: 25, receivedAt: "2026-10-29T00:00:01Z", xWearMm: 0.34, zWearMm: 0.19, xGeometryMm: 2, zGeometryMm: 10 } } };
+  },
   controllerOffset: (row: { xWearMm: number; zWearMm: number; xGeometryMm: number; zGeometryMm: number } | undefined, axis: "x" | "z") => {
     const wear = row?.[axis === "x" ? "xWearMm" : "zWearMm"] ?? null;
     const geometry = row?.[axis === "x" ? "xGeometryMm" : "zGeometryMm"] ?? null;
@@ -56,6 +63,30 @@ beforeEach(async () => {
   await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); });
+
+it("logs wear only when a tool's valid values change, including overlapping windows and partial readings", async () => {
+  const onEvents = vi.fn();
+  await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T25", onEvents })));
+  const send = (second: number, x: number | null, z: number | null, tool: string | null = "25", machine = "M1") => {
+    controllerSamples.callback!([{ timestamp: `2026-11-12T00:00:${String(second).padStart(2, "0")}Z`,
+      tool_no: tool, xWearMm: x, zWearMm: z }], "2026-11-12T00:01:00Z", machine);
+  };
+  send(1, 0.1, 0.2);                           // first valid reading
+  send(2, 0.1, 0.2);                           // same values, new timestamp
+  send(3, null, 0.2);                          // missing X is not a change
+  send(4, null, null);
+  expect(onEvents).toHaveBeenCalledTimes(1);
+  send(5, 0.15, 0.2);                          // X changed
+  send(1, 0.1, 0.2);                           // old window replay
+  send(6, 0.15, 0.2, "025");                  // same normalized tool
+  expect(onEvents).toHaveBeenCalledTimes(2);
+  send(7, 0.1, 0.2);                           // returning to an earlier value is a change
+  send(8, 0.1, 0.2, "26");                    // separate tool
+  send(9, 0.1, 0.2, "25", "M2");              // separate machine
+  send(10, 0.1, 0.2, null);                    // unknown tool also deduplicates
+  send(11, 0.1, 0.2, null);
+  expect(onEvents).toHaveBeenCalledTimes(6);
+});
 
 it("shows both health outputs and separate trend charts without offset or feedback controls", () => {
   expect(host.querySelector('[aria-label="Diameter wear health"]')?.textContent).toContain("0.340");

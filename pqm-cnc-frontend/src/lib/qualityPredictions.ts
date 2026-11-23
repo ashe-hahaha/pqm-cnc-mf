@@ -15,6 +15,7 @@ export const DEFAULT_SERIES_SPEC = { nominal: 18, upperTol: 0.1, lowerTol: 0.1 }
 export type QualityHistoryPoint = {
   index?: number;
   quality?: number;
+  qcValue?: number;
   timestampUtc: string;
 };
 
@@ -28,6 +29,8 @@ export function seriesHistory(
   return (series ?? []).map((item) => ({
     index: item.index,
     quality: item.quality,
+    // Mock measurements share the prediction's sample index for finished balloons.
+    qcValue: [3, 6, 9].includes(item.index) ? item.quality : undefined,
     timestampUtc: "1970-01-01T00:00:00.000Z",
   }));
 }
@@ -74,7 +77,7 @@ export function qualityTrendFromHistory(
           index: point.index ?? i + 1,
           label: String(point.index ?? i + 1),
           prediction: roundFor(point.quality, span),
-          qcValue: null,
+          qcValue: typeof point.qcValue === "number" ? roundFor(point.qcValue, span) : null,
           usl: roundFor(usl, span),
           lsl: roundFor(lsl, span),
         }]

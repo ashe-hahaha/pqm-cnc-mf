@@ -14,7 +14,7 @@ const inspection = (over: Partial<WearInspection> = {}): WearInspection => ({
   ...over,
 });
 
-it("shows the inspection result against prediction and threshold and asks for a second run", async () => {
+it("shows wear with five decimals without threshold comparisons and asks for a second run", async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   const host = document.createElement("div"); document.body.append(host);
   const root = createRoot(host);
@@ -31,16 +31,16 @@ it("shows the inspection result against prediction and threshold and asks for a 
   expect(dialog.textContent).toContain("Laser inspection result");
   expect(dialog.textContent).toContain("T25");
   expect(dialog.textContent).toContain("Diameter wear");
-  expect(dialog.textContent).toContain("0.08 mm");
-  expect(dialog.textContent).toContain("Predicted 0.35 mm · Threshold 0.1 mm");
-  expect(dialog.textContent).toContain("Within threshold");
-  expect(dialog.textContent).toContain("Wear is back within the threshold.");
-  expect(dialog.textContent).toContain("Threshold not set");  // 999 is the backend default for "not set": no verdict for length
+  expect(dialog.textContent).toContain("0.08000 mm");
+  expect(dialog.textContent).toContain("0.20000 mm");
+  expect(dialog.textContent).toContain("Predicted 0.35000 mm");
+  expect(dialog.textContent).toContain("Predicted 0.18000 mm");
+  expect(dialog.textContent).not.toMatch(/threshold/i);
   expect(dialog.textContent).toContain("Do you want to perform a second run?");
 
-  await render(inspection({ result: { ...inspection().result!, actual: { diameter: 0.2, length: 0.2 }, exceeded: ["diameter"] } }));
-  expect(host.textContent).toContain("Still above threshold");
-  expect(host.textContent).toContain("Wear is still above the threshold.");
+  await render(inspection({ result: { ...inspection().result!, actual: { diameter: 0.234567, length: 0.2 }, exceeded: ["diameter"] } }));
+  expect(host.textContent).toContain("0.23457 mm");
+  expect(host.textContent).not.toMatch(/threshold/i);
 
   const buttons = [...host.querySelectorAll("button")];
   await act(async () => buttons.find(b => b.textContent === "Yes, second run")!.click());

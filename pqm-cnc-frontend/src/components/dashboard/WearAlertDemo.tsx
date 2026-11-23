@@ -56,6 +56,8 @@ export type WearAlertSnapshot = {
   history?: WearPrediction[];
   /** Fixed prediction values that each trigger cycles through. */
   series?: { index: number; diameter: number; length: number; quality?: number }[];
+  /** Finished B1–B8 quality history, separate from B9's abnormal prediction demo. */
+  fixedQualitySeries?: { index: number; quality: number }[];
   /** Balloon the quality value of each prediction belongs to. */
   qualityBalloonId?: string;
   /** Tolerance of the quality balloon, stored by the backend (used by every trigger). */

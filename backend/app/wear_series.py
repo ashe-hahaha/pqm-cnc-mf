@@ -28,3 +28,6 @@ PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
     # 10: abnormal, clearly higher than the rest (quality above the 18.1 mm upper limit)
     (0.350, 0.180, 18.1500),
 )
+
+# Finished balloons B1–B8 have a separate, entirely passing quality history.
+FIXED_QUALITY_SERIES = tuple(row[2] for row in PREDICTION_SERIES[:9]) + (18.0095,)

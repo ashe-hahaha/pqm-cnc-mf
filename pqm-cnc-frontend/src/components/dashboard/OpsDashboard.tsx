@@ -62,7 +62,6 @@ import {
   qualityTrendFromHistory,
   seriesHistory,
 } from "@/lib/qualityPredictions";
-import { useMachiningSim } from "@/sim/useMachiningSim";
 
 const DRAWING_STORAGE_KEY = "pqm.ops.activeDrawing";
 const DRAWING_EVENT = "pqm-ops-drawing";
@@ -100,7 +99,7 @@ function parseDrawing(raw: string | null): ActiveDrawing | null {
 
 /**
  * Layout mirrors the A*STAR PQM operational mockup.
- * Live machining sim: 8s / balloon · manual next piece · 1 high-risk + 1 warning / piece.
+ * B1–B8 show finished records; B9 follows backend predictions.
  */
 type InspectSnapshot = {
   balloonId: string;
@@ -164,11 +163,6 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   const [inspect, setInspect] = useState<InspectSnapshot | null>(() =>
     snapshotInspect(initialInspectId, seed.balloons, seed),
   );
-  /**
-   * During review, process graphs follow this id after a click; null keeps
-   * the last finished balloon until the operator selects one.
-   */
-  const [reviewProcessId, setReviewProcessId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [layoutBalloons, setLayoutBalloons] = useState<DrawingBalloon[] | null>(
     null,
@@ -264,42 +258,18 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     }
   }
 
-  /** Geometry roster for the sim (manual layout when a drawing is open, else seed). */
+  /** Drawing roster; prediction results are applied after the backend snapshot arrives. */
   const templateBalloons = useMemo(() => {
     const base = layoutBalloons !== null ? layoutBalloons : seed.balloons;
     return base.map((b) => ({ ...b, risk: "not_machined" as const }));
   }, [layoutBalloons, seed.balloons]);
 
-  const { data, status, speed, setSpeed, loadNextPiece } = useMachiningSim(
-    seed,
-    templateBalloons,
-  );
-
-  // Reset review process focus when a new piece starts (or leave review).
-  useEffect(() => {
-    if (status.phase !== "review") setReviewProcessId(null);
-  }, [status.phase, status.pieceIndex]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== "n" && e.key !== "N") return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      if (
-        t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable)
-      ) {
-        return;
-      }
-      if (!status.canLoadNext) return;
-      e.preventDefault();
-      loadNextPiece();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [status.canLoadNext, loadNextPiece]);
+  const data = useMemo<OpsDashboardSnapshot>(() => ({
+    ...seed,
+    balloons: templateBalloons,
+    alerts: [],
+    recommendations: [],
+  }), [seed, templateBalloons]);
 
   // Tolerances set from Selected Balloon Detail (kept in this browser).
   const [tolerances, setTolerances] = useState<Record<string, Tolerance>>({});
@@ -314,7 +284,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     });
   }, [wearDemo?.qualityBalloonId]);
   const backendQualitySpec = wearDemo?.qualitySpec;
-  const fixedSeries = useMemo(() => seriesHistory(wearDemo?.series), [wearDemo?.series]);
+  const fixedSeries = useMemo(() => seriesHistory(wearDemo?.fixedQualitySeries), [wearDemo?.fixedQualitySeries]);
   const hasFixedSeries = fixedSeries.some((point) => typeof point.quality === "number");
   const latestQuality = wearDemo?.history?.findLast((point) => typeof point.quality === "number")?.quality;
   const allBalloons = useMemo(() => {
@@ -327,38 +297,24 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
       : data.balloons;
     const toleranced = applyTolerances(withDefaults, backendQualitySpec
       ? { ...tolerances, [qualityId]: backendQualitySpec } : tolerances);
-    // Every other balloon passes in the simulation; the live quality balloon's colour follows its latest prediction.
-    return typeof latestQuality === "number"
-      ? toleranced.map((b) => b.id === qualityId && b.risk !== "not_machined"
-        ? { ...b, risk: qualityRisk(latestQuality, b) } : b)
-      : toleranced;
-  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, latestQuality, hasFixedSeries]);
+    // Finished balloons are classified immediately; B9 waits only for a backend prediction.
+    const fixedQuality = fixedSeries.findLast((point) => typeof point.quality === "number")?.quality;
+    return toleranced.map((b) => {
+      const value = b.id === qualityId ? latestQuality : b.source === "manual" ? fixedQuality : undefined;
+      return typeof value === "number" ? { ...b, risk: qualityRisk(value, b) } : b;
+    });
+  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, latestQuality, hasFixedSeries, fixedSeries]);
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),
     [allBalloons, page],
   );
 
-  /**
-   * Process context: live cut while machining; after finish, last balloon
-   * until the operator clicks another — then follow selection.
-   */
-  const processBalloon = useMemo(() => {
-    const id =
-      status.phase === "machining" && status.activeBalloonId
-        ? status.activeBalloonId
-        : status.phase === "review"
-          ? (reviewProcessId ?? status.lastFinishedBalloonId)
-          : null;
-    if (!id) return null;
-    return allBalloons.find((b) => b.id === id) ?? null;
-  }, [
-    status.phase,
-    status.activeBalloonId,
-    status.lastFinishedBalloonId,
-    reviewProcessId,
-    allBalloons,
-  ]);
+  // Process context follows the user's selection; no simulated machining clock.
+  const processBalloon = useMemo(
+    () => allBalloons.find((b) => b.id === inspectId) ?? null,
+    [allBalloons, inspectId],
+  );
 
   const process = processBalloon
     ? resolveProcess(data, processBalloon.id)
@@ -369,7 +325,6 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     if (b?.page && b.page !== page) setPage(b.page);
     setInspectId(id);
     setInspect(snapshotInspect(id, allBalloons, data));
-    if (status.phase === "review") setReviewProcessId(id);
   }
 
   // The live quality balloon (B9) is driven by the backend's prediction series instead of simulated data.
@@ -414,9 +369,9 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
       selectedRisk: inspect?.balloon.risk ?? null,
       predictedValue: inspect?.prediction?.predictedValue ?? null,
       passProbability: inspect?.prediction?.passProbability ?? null,
-      simPhase: status.phase,
-      simLabel: status.label,
-      canLoadNext: status.canLoadNext,
+      simPhase: "review" as const,
+      simLabel: "B1–B8 completed · B9 follows backend prediction",
+      canLoadNext: false,
       summary: {
         pass: summary.pass,
         warning: summary.warning,
@@ -445,9 +400,6 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     [
       inspect,
       inspectId,
-      status.phase,
-      status.label,
-      status.canLoadNext,
       summary,
       allBalloons,
       data.alerts,
@@ -478,13 +430,9 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           selected={processBalloon}
           drawing={drawing}
           onDrawingSelect={handleDrawingSelect}
-          simLabel={status.label}
-          simSpeed={speed}
-          onSimSpeedChange={setSpeed}
+          simLabel="B1–B8 completed · B9 live prediction"
           layoutLocked={dashLayout.locked}
           onLayoutLockedChange={setLayoutLocked}
-          canLoadNext={status.canLoadNext}
-          onLoadNextPiece={loadNextPiece}
           monitorTabs={monitorTabs}
           actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} /> : undefined}
         />
@@ -508,7 +456,8 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
               >
                 <BalloonSummary
                   balloons={allBalloons}
-                  overallQuality={data.overallQuality}
+                  overallQuality={allBalloons.some((b) => b.risk === "high_risk") ? "poor"
+                    : allBalloons.some((b) => b.risk === "warning") ? "watch" : "good"}
                   predictionConfidence={
                     data.modelConfidence.predictionConfidence
                   }
@@ -524,9 +473,6 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                 <ProcessContextPanel
                   balloonCode={processBalloon?.code ?? null}
                   context={process}
-                  streaming={
-                    status.phase === "machining" && !!status.activeBalloonId
-                  }
                 />
               </DashBox>
               <DashBox
@@ -564,7 +510,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                   balloons={pageBalloons}
                   allBalloons={allBalloons}
                   selectedId={inspectId}
-                  machiningId={status.activeBalloonId}
+                  machiningId={null}
                   onSelect={handleSelectBalloon}
                   drawing={drawing}
                   page={page}
@@ -691,7 +637,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <Source label="G-code" />
             <Source label="CMM (sampling)" />
             <span className="normal-case tracking-normal text-[#8fa3b5]">
-              {monitor === 'quality' ? 'Sim · 8s/balloon · Next/N loads piece · B9 follows its prediction' : 'Tool wear demo · diameter and tool length predictions are simulated'}
+              {monitor === 'quality' ? 'B1–B8 fixed completed results · B9 follows backend prediction' : 'Tool wear demo · diameter and tool length predictions are simulated'}
             </span>
           </div>
           <p>All times are synchronized to machine time</p>

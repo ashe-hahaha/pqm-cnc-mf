@@ -26,6 +26,16 @@ def confirm(service, alert):
     return service.start_inspection(alert["alertId"])
 
 
+def test_finished_balloon_quality_history_is_all_within_default_tolerance(tmp_path):
+    _, service = make_service(tmp_path)
+    snapshot = service.snapshot()
+    fixed = snapshot["fixedQualitySeries"]
+    assert [point["index"] for point in fixed] == list(range(1, 11))
+    assert all(17.9 <= point["quality"] <= 18.1 for point in fixed)
+    assert fixed[-1]["quality"] == 18.0095
+    assert snapshot["series"][-1]["quality"] == 18.15
+
+
 def test_predictions_cycle_through_series_and_persist_cursor(tmp_path):
     settings, service = make_service(tmp_path)
     count = len(PREDICTION_SERIES)

@@ -50,12 +50,21 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
   onEvents?: (events: WearEvent[]) => void;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const lastLoggedWear = useRef(new Map<string, { timestamp: number; x: number | null; z: number | null }>());
   const logSamples = useCallback((rows: ControllerRow[], receivedAt: string, machine: string) => {
     if (!onEvents) return;
     const received = rows.flatMap(row => {
       const x = controllerOffset(row, "x").wear;
       const z = controllerOffset(row, "z").wear;
       if (x === null && z === null) return [];
+      const key = JSON.stringify([machine, toolKey(row.tool_no)]);
+      const previous = lastLoggedWear.current.get(key);
+      const timestamp = Date.parse(row.timestamp);
+      if (previous && timestamp < previous.timestamp) return [];
+      // Missing readings do not erase the last valid value of either axis.
+      const next = { timestamp, x: x ?? previous?.x ?? null, z: z ?? previous?.z ?? null };
+      lastLoggedWear.current.set(key, next);
+      if (previous && next.x === previous.x && next.z === previous.z) return [];
       const values = [
         x === null ? null : `X wear ${x} mm`,
         z === null ? null : `Z wear ${z} mm`,
@@ -68,7 +77,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
         detail: values.join(" · "),
       }];
     });
-    onEvents(received);
+    if (received.length) onEvents(received);
   }, [onEvents]);
   const { latestByTool, status: controllerStatus } = useControllerData(true, logSamples);
   const [selectedTool, setSelectedTool] = useState(DEFAULT_TOOL);
