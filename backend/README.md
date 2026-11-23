@@ -55,12 +55,12 @@ uv run pytest
 
 `GET /api/signals/stream?machine_id=Makino_01` 持续返回 SSE。省略机床时使用 `SIGNALS_MACHINE_ID`。
 
-backend 连接 `SIGNALS_WS_URL`（默认 `ws://172.20.114.237:4000/ws`），每轮查询最近 10 秒的 vibration XYZ 和 AE RMS，收到 `done` 后等待约 2 秒（`SIGNALS_POLL_SECONDS`，默认 2）再发下一轮。`include_process=true`，同时读取 controller snapshots。设置独立于 hierarchy 的 `DATA_SOURCE`。
+backend 启动时立即为 `SIGNALS_MACHINE_ID` 建立持续监听，采集最近 10 秒的 vibration XYZ、AE RMS 和 controller（`include_process=true`），独立于 hierarchy 的 `DATA_SOURCE`。默认 live 模式使用 `SIGNALS_WS_URL` 对应的 `/ws/live`；snapshot 模式每轮收到 `done` 后等待 `SIGNALS_POLL_SECONDS`（默认 2 秒）再查询。
 
 - `signals` 事件：`machine_id / start / end / t_max / channels`。每个 channel 为 `channel / method=m4 / bucket_ms / points`，point 为 `t / min / max / first / last`。
 - `status` 事件：`state=connecting|live|stale|empty|unavailable`。有数据时包含 `dataTime / ageSeconds`。默认距当前时间超过 10 秒或超过 10 秒未变化标记 stale。
 - 每 15 秒无事件时发 SSE heartbeat；上游异常保留上次图表并持续重试。相同数据不重复推送。
-- 同一进程内同一机床共用采集任务，最后一个订阅断开后取消任务。demo 使用单 worker；多 worker 不共享采集任务。
+- 同一进程内同一机床共用采集任务。配置机床持续采集，页面关闭、隐藏、刷新均不停止；额外机床按需采集，最后一个订阅断开后取消。demo 使用单 worker；多 worker 不共享采集任务，会重复监听和触发。
 
 ### 浏览器 WebSocket（dashboard 使用）
 
@@ -68,7 +68,9 @@ backend 连接 `SIGNALS_WS_URL`（默认 `ws://172.20.114.237:4000/ws`），每�
 
 - 默认 `SIGNALS_MODE=live`：backend 对上游 `/ws/live` 订阅一次（`window_ms=10000`、vibration XYZ + AE RMS、`include_process`），约每 500 ms 收到整个窗口；`SIGNALS_ENVIRONMENT` 对应上游 `?environment=real|test`。`SIGNALS_MODE=snapshot` 回到逐轮 `/ws` 查询。
 - 浏览器帧：`snapshot`（整个窗口，连接时及重连后）、`delta`（只含新增/变化的 bucket 与 controller 行）、`status`、每 15 秒 `ping`。上游 `idle` 保活时保留上次图形，状态标为 stale。慢客户端队列溢出时丢弃积压并补发一个 `snapshot`。
-- 上游 `SIGNALS_LIVE_TIMEOUT_SECONDS` 内无任何帧则重连，退避 1→30 秒。有浏览器订阅期间才采集；最后一个断开后取消。
+- 上游 `SIGNALS_LIVE_TIMEOUT_SECONDS` 内无任何帧则重连，退避 1→30 秒。配置机床仅在 backend 退出时停止监听；页面订阅复用该连接和最新快照。
+- Controller 在服务首次收到有效 process batch 时建立基线，不触发 prediction；页面重连和上游断线重连保留最后处理的 timestamp/NC line，旧行不会重复触发。backend 重启后重新建立基线；断线超过上游窗口的数据尚未实现 history 回补。
+- 日志包含持续监听启动、上游连接/订阅、基线、自动 prediction 触发及跳过原因。`GET /api/tool-wear/demo` 的 `ncWatch` 可在没有浏览器时查看监听状态。
 - SSE `/api/signals/stream` 保留，行为不变。WebSocket 端点不检查 Origin，与 SSE 一致，由部署网络限制访问。
 - frontend 仍保留原有 5 秒兜底轮询，未改动。
 

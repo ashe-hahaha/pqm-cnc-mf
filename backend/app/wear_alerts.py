@@ -220,9 +220,9 @@ class WearAlerts:
                 "running": running, "value": self.nc["value"], "lastTriggerAt": self.nc["lastTriggerAt"]}
 
     def on_signals(self, machine, batch, state):
-        """Watch the controller NC line in every signal batch (only runs while a page is subscribed).
+        """Watch the controller NC line in every signal batch, independently of browser subscriptions.
 
-        `state` lives as long as the subscription: the first batch after a page opens only records the current value.
+        `state` lives with the machine feed: only its first batch establishes a baseline.
         """
         if machine != self.settings.signals_machine_id:
             return
@@ -249,13 +249,16 @@ class WearAlerts:
             state["last_timestamp"] = row["timestamp"]
             wear_rows.append((normalize_nc(row.get("tool_no")), *wear_from_row(row), row["timestamp"]))
         self.nc["seenAt"] = time.monotonic()
+        if first and rows:
+            logger.info("Controller baseline established machine=%s nc_line=%s timestamp=%s",
+                        machine, state.get("value"), state.get("last_timestamp"))
         if state.get("value") != self.nc["value"]:
             self.nc["value"] = state.get("value")
             changed = True
         if qc_row is not None:
             self.record_qc(qc_row)
         result_ready = False
-        for tool, diameter, length, stamp in wear_rows:  # the first batch after a page opens only records the values
+        for tool, diameter, length, stamp in wear_rows:  # the feed's initial batch only records baseline values
             result_ready |= self.on_wear(tool, diameter, length, stamp, detect=not first)
         if result_ready:
             self.notify_listeners()
@@ -439,6 +442,8 @@ class WearAlerts:
         """
         now = time.monotonic()
         if not self.settings.tool_wear_demo_enabled or self.prediction_running:
+            logger.info("NC line %s trigger ignored %s -> %s (%s)", kind, previous, current,
+                        "demo disabled" if not self.settings.tool_wear_demo_enabled else "prediction running")
             return
         if self.nc_last_trigger is not None and now - self.nc_last_trigger < NC_COOLDOWN_S:
             logger.info("NC line %s trigger ignored (cooldown) %s -> %s", kind, previous, current)

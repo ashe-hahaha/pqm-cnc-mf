@@ -59,6 +59,68 @@ def test_shared_poll_and_cleanup():
     asyncio.run(run())
 
 
+def test_continuous_monitor_triggers_without_browser_and_preserves_baseline_on_reconnect(tmp_path):
+    from app.wear_alerts import WearAlerts
+
+    async def run():
+        baseline, prediction, disconnect = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        connections, triggered = [], []
+
+        async def handler(ws):
+            connections.append(json.loads(await ws.recv()))
+            number = len(connections)
+            rows = [{"timestamp": "2026-10-23T08:14:01Z", "nc_line": 28}]
+            if number > 1:
+                rows.append({"timestamp": "2026-10-23T08:14:02Z", "nc_line": 29})
+            await ws.send(json.dumps(live_frame([number], machine="Makino_01", rows=rows)))
+            if number == 1:
+                await disconnect.wait()
+                await ws.close()
+            else:
+                await ws.wait_closed()
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path), tool_wear_demo_enabled=True,
+                                tool_wear_nc_fallback_seconds=0, signals_ws_url=f"ws://127.0.0.1:{port}/ws")
+            alerts = WearAlerts(settings)
+
+            async def predict(values, detail):
+                triggered.append(detail)
+                prediction.set()
+
+            alerts.run_prediction = predict
+
+            def observe(machine, batch, state):
+                alerts.on_signals(machine, batch, state)
+                baseline.set()
+
+            hub = SignalHub(settings, on_batch=observe)
+            hub.start()
+            try:
+                await asyncio.wait_for(baseline.wait(), 3)
+                assert triggered == []
+                feed = hub.feeds[settings.signals_machine_id]
+                task = feed.task
+                hub.start()  # idempotent; no second upstream connection
+                async with hub.subscribe(settings.signals_machine_id, stream=True) as queue:
+                    assert (await queue.get())[0] == "snapshot"
+                assert hub.feeds[settings.signals_machine_id] is feed and feed.task is task
+                assert not feed.streams and not feed.listeners
+                disconnect.set()
+                await asyncio.wait_for(prediction.wait(), 5)
+                assert len(connections) == 2
+                assert len(triggered) == 1
+                assert feed.state["value"] == "29"
+                assert hub.feeds[settings.signals_machine_id] is feed
+            finally:
+                await hub.close()
+                await alerts.close()
+            assert task.done() and hub.feeds == {} and not hub.persistent_machines
+
+    asyncio.run(run())
+
+
 def test_upstream_failure_keeps_stream_alive():
     async def run():
         async def fail(settings, machine):
@@ -85,8 +147,11 @@ def test_stale_data_and_duplicate_suppression():
     asyncio.run(run())
 
 
-def test_sse_http_stream():
+def test_sse_http_stream(monkeypatch):
     async def run():
+        async def fetch(settings, machine):
+            return {"machine_id": machine, "t_max": datetime.now(timezone.utc).isoformat(), "channels": [{"points": [1]}]}
+        monkeypatch.setattr("app.main.SignalHub", lambda settings, on_batch: SignalHub(settings, fetcher=fetch, on_batch=on_batch))
         app = create_app(Settings(_env_file=None))
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -97,9 +162,6 @@ def test_sse_http_stream():
             async with asyncio.timeout(5):
                 while not server.started:
                     await asyncio.sleep(0.01)
-                async def fetch(settings, machine):
-                    return {"machine_id": machine, "t_max": datetime.now(timezone.utc).isoformat(), "channels": [{"points": [1]}]}
-                app.state.signals.fetcher = fetch
                 async with httpx.AsyncClient() as client:
                     async with client.stream("GET", f"http://127.0.0.1:{port}/api/signals/stream") as response:
                         assert response.status_code == 200
@@ -265,7 +327,7 @@ def test_a_lagging_websocket_client_gets_a_fresh_snapshot_instead_of_missed_delt
     asyncio.run(run())
 
 
-def test_browser_websocket_gets_snapshot_then_deltas_and_pings(tmp_path):
+def test_browser_websocket_gets_snapshot_then_deltas_and_pings(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     batches = [parse_live_update(live_frame(seconds, machine="Makino_01"), "Makino_01")[0] for seconds in ([1, 2], [2, 3])]
     calls = iter(batches)
@@ -276,9 +338,11 @@ def test_browser_websocket_gets_snapshot_then_deltas_and_pings(tmp_path):
         except StopIteration:
             await asyncio.sleep(3600)
 
+    monkeypatch.setattr("app.main.SignalHub", lambda settings, on_batch: SignalHub(settings, fetcher=fetch, on_batch=on_batch))
     app = create_app(Settings(_env_file=None, microscope_image_dir=str(tmp_path), signals_poll_seconds=0.2))
     with TestClient(app) as client:
-        app.state.signals.fetcher = fetch
+        assert app.state.signals.persistent_machines == {"Makino_01"}
+        assert "Makino_01" in app.state.signals.feeds
         with client.websocket_connect("/api/signals/ws") as ws:
             first = ws.receive_json()
             while first["type"] == "status":

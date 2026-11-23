@@ -199,6 +199,21 @@ class SignalHub:
         self.fetcher = fetcher  # a one-shot query function; when set (tests, snapshot mode) the hub polls it
         self.on_batch = on_batch  # called as on_batch(machine, batch, feed.state) after every successful query
         self.feeds: dict[str, Feed] = {}
+        self.persistent_machines: set[str] = set()
+
+    def ensure_feed(self, machine: str) -> Feed:
+        feed = self.feeds.setdefault(machine, Feed())
+        if feed.task is None:
+            run = self.poll if self.fetcher is not None or self.settings.signals_mode == "snapshot" else self.live
+            feed.task = asyncio.create_task(run(machine, feed))
+        return feed
+
+    def start(self):
+        """Keep the configured machine watched for the entire application lifetime."""
+        machine = self.settings.signals_machine_id
+        self.persistent_machines.add(machine)
+        self.ensure_feed(machine)
+        logger.info("Continuous signal monitoring started machine=%s mode=%s", machine, self.settings.signals_mode)
 
     def observe(self, machine: str, feed: Feed, batch: dict):
         if self.on_batch:
@@ -253,6 +268,7 @@ class SignalHub:
             try:
                 async with connect(live_url(settings), max_size=16 * 1024 * 1024, close_timeout=1) as ws:
                     await ws.send(json.dumps(live_subscribe(settings, machine)))
+                    logger.info("Upstream live signals connected and subscribed machine=%s", machine)
                     delay, last_frame = 1.0, monotonic()
                     while True:
                         try:
@@ -282,24 +298,19 @@ class SignalHub:
     @asynccontextmanager
     async def subscribe(self, machine: str, stream: bool = False):
         """Queue of (event, payload). SSE: signals / status. `stream=True` (WebSocket): snapshot / delta / status."""
-        feed = self.feeds.get(machine)
-        if feed is None:
-            feed = self.feeds[machine] = Feed()
+        feed = self.ensure_feed(machine)
         queue = asyncio.Queue(maxsize=16 if stream else 8)
         (feed.streams if stream else feed.listeners).add(queue)
         if feed.latest is not None:
             queue.put_nowait(("snapshot", {**feed.latest, "status": feed.status}) if stream else ("signals", feed.latest))
         if not stream or feed.latest is None:
             queue.put_nowait(("status", feed.status))
-        if feed.task is None:
-            run = self.poll if self.fetcher is not None or self.settings.signals_mode == "snapshot" else self.live
-            feed.task = asyncio.create_task(run(machine, feed))
         try:
             yield queue
         finally:
             feed.listeners.discard(queue)
             feed.streams.discard(queue)
-            if not feed.listeners and not feed.streams:
+            if not feed.listeners and not feed.streams and machine not in self.persistent_machines:
                 self.feeds.pop(machine, None)
                 feed.task.cancel()
                 await asyncio.gather(feed.task, return_exceptions=True)
@@ -310,3 +321,5 @@ class SignalHub:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self.feeds.clear()
+        self.persistent_machines.clear()
+        logger.info("Signal monitoring stopped")

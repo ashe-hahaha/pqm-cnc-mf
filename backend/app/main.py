@@ -44,14 +44,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.tool_images = ToolImageService(settings, on_capture=app.state.wear_alerts.log_photo)
             app.state.tool_images.start()
             app.state.wear_alerts.start()
+            app.state.signals.start()
             try:
                 yield
             finally:
+                await app.state.signals.close()
                 await app.state.wear_alerts.close()
                 await app.state.cctv.close()
                 await app.state.wear_history.close()
                 await app.state.tool_images.close()
-                await app.state.signals.close()
                 app.state.tool_wear.close()
 
     app = FastAPI(title="PQM CNC Data API", version="0.1.0", lifespan=lifespan)
