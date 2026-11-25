@@ -133,6 +133,7 @@ class WearAlerts:
         self.prediction_running = False
         self.cutting = {"run": 1, "status": "waiting", "alertId": None}
         self.cutting_task: asyncio.Task | None = None
+        self.first_run_prediction_started = False
         self.latest_wear: dict[str, tuple[float | None, float | None]] = {}  # tool -> last seen (diameter, length) wear
         self.background: set[asyncio.Task] = set()
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
@@ -205,7 +206,7 @@ class WearAlerts:
             number = float(line)
         except (ValueError, TypeError):
             return False
-        if number == 29 and status != "finished":
+        if number in (22, 29) and status != "finished":
             self.cutting = {**self.cutting, "status": "finished"}
         elif 1 <= number <= 10 and status == "waiting":
             self.cutting = {**self.cutting, "status": "cutting"}
@@ -480,6 +481,10 @@ class WearAlerts:
         a "range" trigger cancels it.
         """
         now = time.monotonic()
+        first_run_end = kind == "start" and current in ("22", "29")
+        if first_run_end and (self.first_run_prediction_started or self.cutting["run"] != 1):
+            logger.info("NC line %s ignored: first-run prediction already handled", current)
+            return
         if not self.settings.tool_wear_demo_enabled or self.prediction_running:
             logger.info("NC line %s trigger ignored %s -> %s (%s)", kind, previous, current,
                         "demo disabled" if not self.settings.tool_wear_demo_enabled else "prediction running")
@@ -488,6 +493,8 @@ class WearAlerts:
             logger.info("NC line %s trigger ignored (cooldown) %s -> %s", kind, previous, current)
             return
         self.nc_last_trigger = now
+        if first_run_end:
+            self.first_run_prediction_started = True
         self.nc["lastTriggerAt"] = datetime.now(timezone.utc).isoformat()
         if kind == "fallback":
             detail = (f"NC line fallback · no {NC_RANGE_LOW}-{NC_RANGE_HIGH} within "
@@ -571,6 +578,7 @@ class WearAlerts:
         """
         self.cutting = {"run": 1, "status": "waiting", "alertId": None}
         now = datetime.now(timezone.utc)
+        self.first_run_prediction_started = False
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")

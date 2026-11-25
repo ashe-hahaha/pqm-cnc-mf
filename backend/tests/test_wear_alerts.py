@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import httpx
 import sqlite3
+import pytest
 from contextlib import closing
 from types import SimpleNamespace
 
@@ -30,6 +31,11 @@ def test_first_cutting_reads_initial_window_and_finishes_at_29(tmp_path):
     assert service.update_first_cutting("29")
     assert service.snapshot()["cutting"]["status"] == "finished"
     assert not service.update_first_cutting("1")
+    service.reset()
+    assert service.update_first_cutting("5")
+    assert service.update_first_cutting("22")
+    assert service.snapshot()["cutting"]["status"] == "finished"
+    assert not service.update_first_cutting("29")
     service.reset()
     service.on_signals(machine, {"process": [
         {"timestamp": "2026-11-25T00:00:01Z", "nc_line": 1},
@@ -250,7 +256,7 @@ def test_nc_line_watcher_triggers_on_a_change_to_a_trigger_value(tmp_path):
         service.PREDICTION_DELAY_S = 0
         machine, state = service.settings.signals_machine_id, {}
         watch = lambda *rows: service.on_signals(machine, batch(*rows), state)
-        assert service.snapshot()["ncWatch"]["triggerValues"] == ["29"]
+        assert service.snapshot()["ncWatch"]["triggerValues"] == ["22", "29"]
 
         watch((1, 20), (2, 20))            # first batch after opening: only recorded
         watch((1, 20), (2, 20), (3, 21))   # overlapping window, a new value that is not a trigger value
@@ -276,6 +282,31 @@ def test_nc_line_watcher_triggers_on_a_change_to_a_trigger_value(tmp_path):
         assert started[-1]["detail"] == "NC line 29 → 74"
         assert service.snapshot()["ncWatch"]["fallbackPending"] is False  # the range trigger cancelled the fallback
 
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("end,other", [(22, 29), (29, 22)])
+def test_first_run_end_predicts_once_for_either_end_line(tmp_path, monkeypatch, end, other):
+    async def run():
+        monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0)
+        settings, service = make_service(tmp_path)
+        settings.tool_wear_nc_fallback_seconds = 0
+        machine, state = settings.signals_machine_id, {}
+        service.on_signals(machine, batch((1, 5)), state)
+        assert service.cutting["status"] == "cutting"
+        service.on_signals(machine, batch((2, end)), state)
+        await asyncio.gather(*service.background)
+        assert service.cutting["status"] == "finished"
+        assert len(service.snapshot()["history"]) == 1
+        service.on_signals(machine, batch((3, other), (4, 20), (5, end)), state)
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1  # no duplicate, even with cooldown disabled
+        service.reset()
+        service.on_signals(machine, batch((6, 5), (7, end)), state)
+        await asyncio.gather(*service.background)
+        assert service.snapshot()["prediction"]["index"] == 9
+        assert service.first_run_prediction_started
+        await service.close()
     asyncio.run(run())
 
 
@@ -402,14 +433,15 @@ def test_nc_fallback_is_cancelled_by_a_range_trigger_and_can_be_disabled(tmp_pat
 
         service.cancel_fallback()
         settings.tool_wear_nc_fallback_seconds = 0          # 0 disables the fallback
+        settings.tool_wear_nc_trigger_values = "30"        # use a reusable custom trigger to isolate fallback behaviour
         await asyncio.sleep(0.1)
-        service.on_signals(machine, batch((6, 20), (7, 29)), state)
+        service.on_signals(machine, batch((6, 20), (7, 30)), state)
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 3 and status() is False
 
         settings.tool_wear_nc_fallback_seconds = 5          # a new start trigger re-arms; reset-like cancel clears it
         await asyncio.sleep(0.1)
-        service.on_signals(machine, batch((8, 20), (9, 29)), state)
+        service.on_signals(machine, batch((8, 20), (9, 30)), state)
         await asyncio.gather(*service.background)
         assert status() is True
         service.cancel_fallback()
