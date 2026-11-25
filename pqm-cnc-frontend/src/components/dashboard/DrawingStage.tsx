@@ -341,7 +341,6 @@ export function DrawingStage({
             }}
           >
             {label}
-            {machining && <span className="absolute left-1/2 top-full mt-1 -translate-x-1/2 rounded bg-violet-500 px-1 py-0.5 text-[8px] leading-none text-white">Cutting</span>}
           </button>
         );
       })}
