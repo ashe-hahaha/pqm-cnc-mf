@@ -34,7 +34,7 @@ export function QualityTrend({
     <TrendPanel
       id="trends"
       title={title}
-      description={<>{points.length} predicted · mock data{measured.length > 0 ? ` · ${measured.length} measured (reference)` : ""} · LSL–USL band</>}
+      description={<>{points.length} predicted{measured.length > 0 ? ` · ${measured.length} measured (reference)` : ""} · LSL–USL band</>}
       status={
         last ? (
           <span

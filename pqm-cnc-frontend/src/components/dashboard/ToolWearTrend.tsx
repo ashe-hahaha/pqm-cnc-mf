@@ -17,7 +17,7 @@ export function ToolWearTrend({ snapshot = null }: { snapshot?: WearAlertSnapsho
 
   return (
     <TrendPanel id="tool-wear-trend" title={`Tool wear trend · ${TOOL_LABEL}`}
-      description={<>{history.length} predicted · mock data · last 10 shown · mm</>}
+      description={<>{history.length} predicted · last 10 shown · mm</>}
       status={latest ? (
         <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${latestExceeded ? "bg-bad" : "bg-good"} text-[#0b1724]`}>
           {latestExceeded ? "High wear" : "Within limit"}

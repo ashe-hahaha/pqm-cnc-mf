@@ -262,7 +262,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
         <p className="text-xs text-[#a5bdd0]">
           {prediction
             ? `${prediction.machineId} · Tool ${prediction.toolNo}${prediction.index ? ` · #${prediction.index}` : ""} · Diameter ${prediction.diameter} mm · Length ${prediction.length} mm · ${new Date(prediction.timestampUtc).toLocaleString()}`
-            : "No mock prediction yet."}
+            : "No prediction yet."}
         </p>
       )}
       <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={submit}>
@@ -327,11 +327,11 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
           <button className={buttonStyle} disabled={busy}>Simulate new wear</button>
         </form>
       )}
-      {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Mock prediction controls are disabled on the server.</p>}
+      {snapshot && !snapshot.enabled && <p className="mt-2 text-xs text-[#a5bdd0]">Prediction controls are disabled on the server.</p>}
       <p role="status" className="mt-2 text-xs text-[#a5bdd0]">{message}</p>
     </>
   );
-  return settings || bare ? content : <Panel title="Mock tool wear prediction">{content}</Panel>;
+  return settings || bare ? content : <Panel title="Tool wear prediction">{content}</Panel>;
 }
 
 /** Header icon button that opens the mock prediction form in a popover. */
@@ -354,7 +354,7 @@ export function WearAlertPopover({ snapshot }: { snapshot: WearAlertSnapshot | n
   const alerting = (snapshot?.alerts.length ?? 0) > 0;
   return (
     <div ref={rootRef} className="relative">
-      <button type="button" aria-label="Mock tool wear prediction" title="Mock tool wear prediction"
+      <button type="button" aria-label="Tool wear prediction" title="Tool wear prediction"
         aria-expanded={open} aria-controls="wear-mock-popover" onClick={() => setOpen(v => !v)}
         className={`relative flex h-8 w-8 items-center justify-center rounded-lg border transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400 ${
           open ? "border-[#3d8fd1]/50 bg-[#3d8fd1]/15 text-[#7eb6e8]"
@@ -366,9 +366,9 @@ export function WearAlertPopover({ snapshot }: { snapshot: WearAlertSnapshot | n
         {alerting && <span aria-hidden="true" className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-400" />}
       </button>
       {open && (
-        <div id="wear-mock-popover" role="dialog" aria-label="Mock tool wear prediction"
+        <div id="wear-mock-popover" role="dialog" aria-label="Tool wear prediction"
           className="absolute right-0 top-full z-50 mt-2 w-[min(92vw,420px)] rounded-xl border border-[#243141] bg-[#121a24] p-3.5 shadow-xl shadow-black/40">
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-[#8fa3b5]">Mock tool wear prediction</h2>
+          <h2 className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-[#8fa3b5]">Tool wear prediction</h2>
           <WearAlertForm snapshot={snapshot} bare />
         </div>
       )}

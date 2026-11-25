@@ -637,7 +637,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
             <Source label="G-code" />
             <Source label="CMM (sampling)" />
             <span className="normal-case tracking-normal text-[#8fa3b5]">
-              {monitor === 'quality' ? 'B1–B8 fixed completed results · B9 follows backend prediction' : 'Tool wear demo · diameter and tool length predictions are simulated'}
+              {monitor === 'quality' ? 'B1–B8 fixed completed results · B9 follows backend prediction' : 'Tool wear · diameter and tool length predictions'}
             </span>
           </div>
           <p>All times are synchronized to machine time</p>
