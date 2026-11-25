@@ -131,6 +131,8 @@ class WearAlerts:
         self.nc_last_trigger = None  # monotonic time of the last automatic trigger
         self.nc_fallback: asyncio.Task | None = None  # pending fallback trigger armed by a "start" trigger
         self.prediction_running = False
+        self.cutting = {"run": 1, "status": "waiting", "alertId": None}
+        self.cutting_task: asyncio.Task | None = None
         self.latest_wear: dict[str, tuple[float | None, float | None]] = {}  # tool -> last seen (diameter, length) wear
         self.background: set[asyncio.Task] = set()
         self.path = Path(settings.microscope_image_dir) / "wear-alerts.sqlite3"
@@ -188,11 +190,47 @@ class WearAlerts:
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
                 "lastQc": json.loads(last_qc[0]) if last_qc else None,
                 "ncWatch": self.nc_status(),
+                "cutting": dict(self.cutting),
                 "inspection": json.loads(inspection[0]) if inspection else None,
                 "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
                 "destinations": self.destinations, "pendingNotifications": pending,
                 "alerts": [json.loads(row[0]) for row in alerts],
                 "events": [json.loads(row[0]) for row in reversed(events)]}
+
+    def update_first_cutting(self, line):
+        if not self.settings.tool_wear_demo_enabled or self.cutting["run"] != 1:
+            return False
+        status = self.cutting["status"]
+        try:
+            number = float(line)
+        except (ValueError, TypeError):
+            return False
+        if number == 29 and status != "finished":
+            self.cutting = {**self.cutting, "status": "finished"}
+        elif 1 <= number <= 10 and status == "waiting":
+            self.cutting = {**self.cutting, "status": "cutting"}
+        else:
+            return False
+        return True
+
+    def cancel_cutting_timer(self):
+        if self.cutting_task is not None:
+            self.cutting_task.cancel()
+            self.cutting_task = None
+
+    def arm_second_cutting(self, alert_id):
+        # Called on the event loop after the inspection transaction commits.
+        if self.cutting["alertId"] == alert_id:
+            return
+        self.cancel_cutting_timer()
+        self.cutting = {"run": 2, "status": "pending", "alertId": alert_id}
+        self.cutting_task = asyncio.create_task(self.start_second_cutting(alert_id))
+
+    async def start_second_cutting(self, alert_id):
+        await asyncio.sleep(self.settings.tool_wear_second_run_cutting_delay_seconds)
+        if self.cutting["alertId"] == alert_id and self.cutting["status"] == "pending":
+            self.cutting = {**self.cutting, "status": "cutting"}
+            self.notify_listeners()
 
     def set_thresholds(self, values: WearValues):
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -238,6 +276,7 @@ class WearAlerts:
             if not first and row["timestamp"] <= state["last_timestamp"]:
                 continue  # windows overlap and a stopped database repeats old rows
             current = normalize_nc(row.get(NC_LINE_FIELD))
+            changed |= self.update_first_cutting(current)
             kind = None if first else nc_trigger_kind(state["value"], current, triggers)
             if kind:
                 fires.append((state["value"], current, kind))
@@ -264,7 +303,7 @@ class WearAlerts:
             self.notify_listeners()
         for fire in fires:  # in line order; the shared cooldown lets only the first one through
             self.start_auto_prediction(*fire)
-        if not fires and changed:
+        if changed:
             self.notify_listeners()
 
     def on_wear(self, tool, diameter, length, stamp, detect=True):
@@ -486,12 +525,16 @@ class WearAlerts:
     async def run_prediction(self, values: MockPrediction, detail="Mock prediction"):
         """Manual and automatic triggers share this flow: events, prediction, alerts and notifications."""
         self.prediction_running = True
+        second_run = self.cutting["alertId"] if self.cutting["run"] == 2 else None
         try:
             self.log_event("Prediction started", TOOL_NO, detail=detail)
             if self.PREDICTION_DELAY_S > 0:
                 await asyncio.sleep(self.PREDICTION_DELAY_S)
             result = await asyncio.to_thread(self.record, values)
             self.log_prediction_results(result)
+            if second_run is not None and self.cutting["alertId"] == second_run:
+                self.cancel_cutting_timer()
+                self.cutting = {**self.cutting, "status": "finished"}
             self.notify_listeners()
             return result
         finally:
@@ -526,6 +569,7 @@ class WearAlerts:
 
         Thresholds are kept. The next automatic trigger continues with the following series entry.
         """
+        self.cutting = {"run": 1, "status": "waiting", "alertId": None}
         now = datetime.now(timezone.utc)
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
@@ -746,6 +790,10 @@ class WearAlerts:
 
     async def close(self):
         self.cancel_fallback()
+        cutting_task = self.cutting_task
+        self.cancel_cutting_timer()
+        if cutting_task is not None:
+            await asyncio.gather(cutting_task, return_exceptions=True)
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -796,6 +844,7 @@ async def confirm_inspection(request: Request, alert_id: str):
 async def second_run(request: Request, alert_id: str):
     service = enabled_service(request)
     result = await asyncio.to_thread(service.request_second_run, alert_id)
+    service.arm_second_cutting(alert_id)
     service.notify_listeners()
     return result
 
@@ -816,6 +865,7 @@ async def simulate_wear(request: Request, alert_id: str, values: WearValues):
 @router.post("/reset")
 async def reset(request: Request):
     service = enabled_service(request)
+    service.cancel_cutting_timer()
     await asyncio.to_thread(service.reset)
     service.cancel_fallback()  # a pending fallback must not fire into the freshly reset demo
     service.notify_listeners("reset")

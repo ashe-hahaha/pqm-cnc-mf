@@ -57,7 +57,7 @@ export function DrawingStage({
   worldHeight?: number;
   balloons: DrawingBalloon[];
   selectedId: string | null;
-  /** Balloon currently under cut in the machining sim. */
+  /** Balloon currently cutting, as reported by the backend. */
   machiningId?: string | null;
   adjustMode: boolean;
   busyLabel?: string | null;
@@ -303,7 +303,7 @@ export function DrawingStage({
             data-balloon={b.id}
             data-machining={machining ? "true" : undefined}
             title={`${b.code} · ${b.characteristic} · ${riskLabel[b.risk]}${
-              machining ? " · machining now" : ""
+              machining ? " · Cutting" : ""
             }${adjustMode ? " · drag" : ""}`}
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -326,14 +326,14 @@ export function DrawingStage({
               top,
               width: balloonScreenPx,
               height: balloonScreenPx,
-              backgroundColor: fill,
+              backgroundColor: machining ? MACHINING_RING : fill,
               borderColor: machining
                 ? MACHINING_RING
                 : selected
                   ? "#ffffff"
                   : "rgba(255,255,255,0.35)",
               borderWidth: machining || selected ? 2 : 1,
-              color: b.risk === "not_machined" ? "#cbd5e1" : "#0b111b",
+              color: machining ? "#0b111b" : b.risk === "not_machined" ? "#cbd5e1" : "#0b111b",
               fontSize: fontPx,
               boxShadow: machining
                 ? `0 0 0 ${Math.max(3, balloonScreenPx * 0.35)}px ${MACHINING_GLOW}, 0 0 ${Math.max(8, balloonScreenPx * 0.7)}px ${MACHINING_GLOW_SOFT}`
@@ -341,6 +341,7 @@ export function DrawingStage({
             }}
           >
             {label}
+            {machining && <span className="absolute left-1/2 top-full mt-1 -translate-x-1/2 rounded bg-violet-500 px-1 py-0.5 text-[8px] leading-none text-white">Cutting</span>}
           </button>
         );
       })}

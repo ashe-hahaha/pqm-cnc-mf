@@ -21,6 +21,69 @@ def make_service(tmp_path):
     return settings, WearAlerts(settings)
 
 
+def test_first_cutting_reads_initial_window_and_finishes_at_29(tmp_path):
+    _, service = make_service(tmp_path)
+    machine = service.settings.signals_machine_id
+    state = {}
+    service.on_signals(machine, {"process": [{"timestamp": "2026-11-25T00:00:01Z", "nc_line": 5}]}, state)
+    assert service.snapshot()["cutting"] == {"run": 1, "status": "cutting", "alertId": None}
+    assert service.update_first_cutting("29")
+    assert service.snapshot()["cutting"]["status"] == "finished"
+    assert not service.update_first_cutting("1")
+    service.reset()
+    service.on_signals(machine, {"process": [
+        {"timestamp": "2026-11-25T00:00:01Z", "nc_line": 1},
+        {"timestamp": "2026-11-25T00:00:02Z", "nc_line": 29},
+    ]}, {})
+    assert service.snapshot()["cutting"]["status"] == "finished"
+
+
+def test_second_cutting_delays_then_finishes_on_range_prediction(tmp_path):
+    async def run():
+        settings, service = make_service(tmp_path)
+        settings.tool_wear_second_run_cutting_delay_seconds = 0
+        settings.tool_wear_nc_fallback_seconds = 0
+        alert = make_alert(service)
+        confirm(service, alert)
+        service.simulate_wear(alert["alertId"], WearValues(diameter=0.08, length=0.03))
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(wear_alerts=service)))
+        await wear_alerts.second_run(request, alert["alertId"])
+        timer = service.cutting_task
+        assert service.cutting["status"] == "pending"
+        await timer
+        assert service.cutting["status"] == "cutting"
+        await wear_alerts.second_run(request, alert["alertId"])
+        assert service.cutting_task is timer  # repeated confirmation does not restart the delay
+        assert not service.update_first_cutting("29")
+        service.start_auto_prediction("72", "73", "range")
+        await asyncio.gather(*service.background)
+        assert service.cutting["status"] == "finished"
+        await service.close()
+    asyncio.run(run())
+
+
+def test_second_prediction_before_delay_cancels_cutting_and_reset_clears_state(tmp_path):
+    async def run():
+        _, service = make_service(tmp_path)
+        service.arm_second_cutting("a")
+        timer = service.cutting_task
+        await service.run_prediction(MockPrediction())
+        await asyncio.gather(timer, return_exceptions=True)
+        assert timer.cancelled() and service.cutting["status"] == "finished"
+        service.arm_second_cutting("a")
+        assert service.cutting_task is None  # late duplicate must not turn purple again
+        service.arm_second_cutting("b")
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(wear_alerts=service)))
+        await wear_alerts.reset(request)
+        assert service.cutting == {"run": 1, "status": "waiting", "alertId": None}
+        assert service.cutting_task is None
+        service.arm_second_cutting("c")
+        timer = service.cutting_task
+        await service.close()
+        assert timer.done()
+    asyncio.run(run())
+
+
 def confirm(service, alert):
     """The operator chose "Yes, laser inspection" for this alert (this is what queues the Kafka notification)."""
     return service.start_inspection(alert["alertId"])

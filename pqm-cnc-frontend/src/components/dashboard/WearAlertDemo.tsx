@@ -63,6 +63,7 @@ export type WearAlertSnapshot = {
   /** Tolerance of the quality balloon, stored by the backend (used by every trigger). */
   qualitySpec?: QualitySpec;
   ncWatch?: NcWatch;
+  cutting?: { run: number; status: "waiting" | "pending" | "cutting" | "finished"; alertId: string | null };
   /** The most recent laser inspection (null before the first one). */
   inspection?: WearInspection | null;
   /** Last measured diameter (mm) sampled from the controller when the NC line reaches the QC step. */

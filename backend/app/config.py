@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     tool_wear_qc_mask_out_of_spec: bool = True
     # Simulated prediction time between "Prediction started" and "Prediction completed" (0 = immediately).
     tool_wear_prediction_delay_seconds: float = Field(default=0, ge=0)
+    tool_wear_second_run_cutting_delay_seconds: float = Field(default=3, ge=0)
     tool_wear_qc_pass_value: float = 18.067
     # Machine CCTV: still pictures from the Hikvision NVR (empty host = disabled).
     cctv_nvr_host: str = ""

@@ -64,6 +64,8 @@ backend 启动时立即为 `SIGNALS_MACHINE_ID` 建立持续监听，采集最�
 
 ### 浏览器 WebSocket（dashboard 使用）
 
+B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，29 结束（首次窗口也按顺序处理）。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，包括 73–74 或 fallback 触发；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。
+
 `WS /api/signals/ws?machine_id=Makino_01` 向浏览器推送实时信号。frontend 经 Next 代理 `/backend` 连接，全页共用一个连接。
 
 - 默认 `SIGNALS_MODE=live`：backend 对上游 `/ws/live` 订阅一次（`window_ms=10000`、vibration XYZ + AE RMS、`include_process`），约每 500 ms 收到整个窗口；`SIGNALS_ENVIRONMENT` 对应上游 `?environment=real|test`。`SIGNALS_MODE=snapshot` 回到逐轮 `/ws` 查询。

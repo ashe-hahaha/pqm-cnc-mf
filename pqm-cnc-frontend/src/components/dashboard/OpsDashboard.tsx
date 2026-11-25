@@ -430,7 +430,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           selected={processBalloon}
           drawing={drawing}
           onDrawingSelect={handleDrawingSelect}
-          simLabel="B1–B8 completed · B9 live prediction"
+          simLabel={wearDemo?.cutting?.status === "cutting" ? "B9 · Cutting" : "B1–B8 completed · B9 live prediction"}
           layoutLocked={dashLayout.locked}
           onLayoutLockedChange={setLayoutLocked}
           monitorTabs={monitorTabs}
@@ -510,7 +510,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
                   balloons={pageBalloons}
                   allBalloons={allBalloons}
                   selectedId={inspectId}
-                  machiningId={null}
+                  machiningId={wearDemo?.cutting?.status === "cutting" ? qualityBalloonId : null}
                   onSelect={handleSelectBalloon}
                   drawing={drawing}
                   page={page}
