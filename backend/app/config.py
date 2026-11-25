@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     tool_wear_nc_trigger_values: str = "29"
     # After a trigger value fires, trigger once more if no 73-74 trigger follows within this many seconds (0 = off).
     tool_wear_nc_fallback_seconds: float = Field(default=120, ge=0)
-    # Demo: a QC value (NC line 93, macro 956) outside the quality balloon (B9) tolerance is shown as `tool_wear_qc_pass_value` instead.
+    # Demo: a QC value (NC line 93, macro 106) outside the quality balloon (B9) tolerance is shown as `tool_wear_qc_pass_value` instead.
     tool_wear_qc_mask_out_of_spec: bool = True
     # Simulated prediction time between "Prediction started" and "Prediction completed" (0 = immediately).
     tool_wear_prediction_delay_seconds: float = Field(default=0, ge=0)

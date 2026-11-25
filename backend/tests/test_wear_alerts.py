@@ -370,27 +370,27 @@ def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path)
         last_qc = lambda: service.snapshot()["lastQc"]
         assert last_qc() is None
 
-        watch((1, 92, {"956": 9.5}))                       # first batch: only recorded, even if it is 93 later
-        watch((2, 93, {"956": 18.012}), (3, 93, {"956": 18.02}))  # arrival at 93 samples once (first row of the stay)
+        watch((1, 92, {"106": 9.5}))                       # first batch: only recorded, even if it is 93 later
+        watch((2, 93, {"106": 18.012}), (3, 93, {"106": 18.02}))  # arrival at 93 samples once (first row of the stay)
         await asyncio.gather(*service.background)
-        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "956"
+        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "106"
         assert last_qc()["timestampUtc"] == "2026-11-12T02:31:02.000Z"
         assert service.snapshot()["history"] == []         # no prediction was started
         assert service.snapshot()["ncWatch"]["fallbackPending"] is False
         labels = [e["label"] for e in service.snapshot()["events"]]
         assert labels == ["QC measured"]
 
-        watch((4, 93, {"956": 18.03}))                       # still at 93: no new sample
+        watch((4, 93, {"106": 18.03}))                       # still at 93: no new sample
         assert last_qc()["value"] == 18.012
 
-        for i, macros in enumerate(({}, {"955": 1.0}, {"956": None}, {"956": float("nan")}, None, {"956": "x"})):
+        for i, macros in enumerate(({}, {"955": 1.0}, {"106": None}, {"106": float("nan")}, None, {"106": "x"})):
             watch((10 + 2 * i, 40, {}))
             watch((11 + 2 * i, 93, macros))                # no usable value: last QC stays, a note is logged
             assert last_qc()["value"] == 18.012
         assert [e["label"] for e in service.snapshot()["events"]].count("QC not available") == 6
 
         watch((30, 40, {}))
-        watch((31, 93, {"956": 18}))                       # integers are fine; a newer value replaces the old one
+        watch((31, 93, {"106": 18}))                       # integers are fine; a newer value replaces the old one
         assert last_qc()["value"] == 18.0
 
         restarted = WearAlerts(service.settings)           # persisted
@@ -409,7 +409,7 @@ def test_out_of_spec_qc_is_shown_as_the_fixed_passing_value(tmp_path):
 
         def measure(value):
             service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)
-            service.on_signals(machine, qc_batch((next(seconds), 93, {"956": value})), state)
+            service.on_signals(machine, qc_batch((next(seconds), 93, {"106": value})), state)
             return service.snapshot()["lastQc"]["value"]
 
         service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)  # first batch
