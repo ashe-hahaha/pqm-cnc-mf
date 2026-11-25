@@ -11,6 +11,15 @@ export const DEFAULT_QUALITY_BALLOON_ID = "b9";
 /** Demo: tolerance every series-driven balloon starts with (each can be changed by hand). Matches the backend default. */
 export const DEFAULT_SERIES_SPEC = { nominal: 18, upperTol: 0.1, lowerTol: 0.1 } as const;
 
+/** Demo phase colour underneath the purple cutting overlay. */
+export function demoBalloonRisk(cutting?: {
+  run: number; status: "waiting" | "pending" | "cutting" | "finished";
+}): BalloonRisk {
+  if (!cutting) return "not_machined";
+  if (cutting.run === 2) return cutting.status === "finished" ? "pass" : "high_risk";
+  return cutting.status === "finished" ? "high_risk" : "not_machined";
+}
+
 /** One backend prediction as far as the quality balloon is concerned. */
 export type QualityHistoryPoint = {
   index?: number;

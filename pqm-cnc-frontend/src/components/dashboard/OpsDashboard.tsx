@@ -57,6 +57,7 @@ import {
 import {
   DEFAULT_QUALITY_BALLOON_ID,
   DEFAULT_SERIES_SPEC,
+  demoBalloonRisk,
   qualityPredictionFromHistory,
   qualityRisk,
   qualityTrendFromHistory,
@@ -286,7 +287,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   const backendQualitySpec = wearDemo?.qualitySpec;
   const fixedSeries = useMemo(() => seriesHistory(wearDemo?.fixedQualitySeries), [wearDemo?.fixedQualitySeries]);
   const hasFixedSeries = fixedSeries.some((point) => typeof point.quality === "number");
-  const latestQuality = wearDemo?.history?.findLast((point) => typeof point.quality === "number")?.quality;
+  const cutting = wearDemo?.cutting;
   const allBalloons = useMemo(() => {
     const qualityId = wearDemo?.qualityBalloonId ?? DEFAULT_QUALITY_BALLOON_ID;
     // The other drawing balloons are treated as finished and show the fixed series with this default tolerance
@@ -297,13 +298,14 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
       : data.balloons;
     const toleranced = applyTolerances(withDefaults, backendQualitySpec
       ? { ...tolerances, [qualityId]: backendQualitySpec } : tolerances);
-    // Finished balloons are classified immediately; B9 waits only for a backend prediction.
+    // B9's demo colour follows the run phase; fixed balloons follow their quality values.
     const fixedQuality = fixedSeries.findLast((point) => typeof point.quality === "number")?.quality;
     return toleranced.map((b) => {
-      const value = b.id === qualityId ? latestQuality : b.source === "manual" ? fixedQuality : undefined;
+      if (b.id === qualityId) return { ...b, risk: demoBalloonRisk(cutting) };
+      const value = b.source === "manual" ? fixedQuality : undefined;
       return typeof value === "number" ? { ...b, risk: qualityRisk(value, b) } : b;
     });
-  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, latestQuality, hasFixedSeries, fixedSeries]);
+  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, cutting, hasFixedSeries, fixedSeries]);
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),

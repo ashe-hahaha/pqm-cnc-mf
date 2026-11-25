@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SERIES_SPEC,
+  demoBalloonRisk,
   qualityPredictionFromHistory,
   qualityRisk,
   qualityTrendFromHistory,
@@ -9,6 +10,18 @@ import {
 
 const b1 = { id: "b1", nominal: 0, upperTol: 0.02, lowerTol: 0, unit: "mm" };
 const at = (quality: number, index: number) => ({ quality, index, timestampUtc: "2026-11-11T00:00:00Z" });
+
+it("colours B9 by demo run phase, keeping red through inspection and the second-run delay", () => {
+  expect(demoBalloonRisk()).toBe("not_machined");
+  expect(demoBalloonRisk({ run: 1, status: "waiting" })).toBe("not_machined");
+  // Cutting itself is rendered with the drawing's existing purple override.
+  expect(demoBalloonRisk({ run: 1, status: "cutting" })).toBe("not_machined");
+  expect(demoBalloonRisk({ run: 1, status: "finished" })).toBe("high_risk");
+  expect(demoBalloonRisk({ run: 2, status: "pending" })).toBe("high_risk");
+  expect(demoBalloonRisk({ run: 2, status: "cutting" })).toBe("high_risk");
+  expect(demoBalloonRisk({ run: 2, status: "finished" })).toBe("pass");
+  expect(demoBalloonRisk({ run: 1, status: "waiting" })).toBe("not_machined");
+});
 
 describe("quality predictions from backend history", () => {
   it("maps history to trend points with the balloon's USL/LSL", () => {
