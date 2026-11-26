@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toolKey, toolLabel } from "@/lib/toolNumber";
 import type { ToolWearAlert } from "./WearAlertDemo";
+import { usePopupDrag } from "./usePopupDrag";
 
 const METRIC_LABEL = { diameter: "Diameter wear", length: "Tool length wear" } as const;
 
@@ -10,16 +11,18 @@ const METRIC_LABEL = { diameter: "Diameter wear", length: "Tool length wear" } a
  * Centered warning shown on the home page when a new tool wear prediction alert fires. It asks whether to do a laser
  * inspection; "Yes" confirms the newest alert (the backend then notifies Kafka and waits for the new wear values).
  */
-export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss }: {
+export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss, error }: {
   alerts: readonly ToolWearAlert[];
   /** Notification targets the backend sends the alert itself to (shown in the details). */
   destinations?: readonly string[];
   onConfirm: (alert: ToolWearAlert) => void;
   onDismiss: () => void;
+  error?: string;
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const confirmRef = useRef<HTMLButtonElement>(null);
   const alert = alerts.at(-1);
+  const drag = usePopupDrag(alert?.alertId);
 
   useEffect(() => {
     if (!alert) return;
@@ -34,9 +37,9 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
   const { prediction, thresholds } = alert;
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/65 p-4">
-      <div role="alertdialog" aria-modal="true" aria-labelledby="wear-alert-title" aria-describedby="wear-alert-body"
-        className="w-[min(92vw,26rem)] rounded-xl border border-bad/60 bg-[#101a26] p-5 shadow-2xl shadow-black/60">
-        <div className="flex items-start gap-3">
+      <div ref={drag.ref} style={drag.style} role="alertdialog" aria-modal="true" aria-labelledby="wear-alert-title" aria-describedby="wear-alert-body"
+        className="max-h-[calc(100dvh-2rem)] w-[min(92vw,26rem)] overflow-auto rounded-xl border border-bad/60 bg-[#101a26] p-5 shadow-2xl shadow-black/60">
+        <div {...drag.titleProps} className="flex cursor-move touch-none select-none items-start gap-3">
           <span aria-hidden="true" className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-bad/20 text-lg font-bold text-bad">!</span>
           <div className="min-w-0">
             <h2 id="wear-alert-title" className="text-sm font-semibold text-foreground">Tool wear prediction alert</h2>
@@ -67,6 +70,7 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
             <dd className="break-all text-[#c6d7e4]">{alert.alertId}</dd>
           </dl>
         )}
+        {error && <p role="alert" className="mt-2 text-xs text-rose-300">{error}</p>}
         <div className="mt-4 flex items-center justify-between gap-2">
           <button type="button" aria-expanded={showDetails} onClick={() => setShowDetails(v => !v)}
             className="rounded px-2 py-1 text-[11px] text-[#8fa3b5] hover:bg-[#192a39] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
@@ -75,7 +79,7 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
           <span className="flex gap-2">
             <button type="button" onClick={onDismiss}
               className="rounded border border-[#314254] px-3 py-1.5 text-xs text-[#8fa3b5] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
-              Not now
+              Later
             </button>
             <button ref={confirmRef} type="button" onClick={() => onConfirm(alert)}
               className="rounded border border-[#3d8fd1]/60 bg-[#23425b] px-3 py-1.5 text-xs font-semibold text-[#a5d8fa] hover:bg-[#2b5272] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">

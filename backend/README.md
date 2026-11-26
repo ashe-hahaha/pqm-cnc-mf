@@ -64,6 +64,8 @@ backend 启动时立即为 `SIGNALS_MACHINE_ID` 建立持续监听，采集最�
 
 ### Demo inspection / rework measurements
 
+Inspection / Rework 待办由 snapshot 的 `tasks` 返回，包含完整弹窗数据，不受 alerts 最近 20 条的显示限制。`POST /api/tool-wear/demo/tasks/{task_id}/defer` 持久化稍后处理状态，不改变 inspection 状态、不发送指令；任务确认后自动从待办移除，superseded/dismissed inspection 不再显示，Reset 清除。顶部铃铛列出所有待办，可重新打开并确认；首次加载只列出历史任务，新任务可自动弹窗。两个 popup 支持标题栏拖动，Later / Esc 都暂缓处理。多客户端通过现有 SSE 更新共享任务状态。
+
 确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["956"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。原 QC 超限显示替换配置仍适用。
 
 B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，22 或 29 任意一个结束并触发一次 prediction（默认 `TOOL_WEAR_NC_TRIGGER_VALUES=22,29`；同一次 run 不重复触发）。首次窗口按顺序恢复 cutting 状态，但不回放历史 prediction。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，由 NC 73–74 触发（已移除 120 秒保底）；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。

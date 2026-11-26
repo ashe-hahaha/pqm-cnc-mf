@@ -38,7 +38,7 @@ it("shows the newest alert centered, reveals details, and confirms or dismisses"
   await act(async () => buttons.find(b => b.textContent === "Yes, laser inspection")!.click());
   expect(onConfirm).toHaveBeenCalledOnce();
   expect(onConfirm.mock.calls[0][0].alertId).toBe("a-2");  // the newest alert is the one that gets inspected
-  await act(async () => buttons.find(b => b.textContent === "Not now")!.click());
+  await act(async () => buttons.find(b => b.textContent === "Later")!.click());
   expect(onDismiss).toHaveBeenCalledOnce();
   await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
   expect(onDismiss).toHaveBeenCalledTimes(2);

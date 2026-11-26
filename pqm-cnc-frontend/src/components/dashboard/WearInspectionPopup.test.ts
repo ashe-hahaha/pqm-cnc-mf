@@ -52,7 +52,7 @@ it("shows wear with five decimals without threshold comparisons and asks for a s
   const buttons = [...host.querySelectorAll("button")];
   await act(async () => buttons.find(b => b.textContent === "Yes, rework")!.click());
   expect(onSecondRun).toHaveBeenCalledWith("a-1");
-  await act(async () => buttons.find(b => b.textContent === "Not now")!.click());
+  await act(async () => buttons.find(b => b.textContent === "Later")!.click());
   expect(onDismiss).toHaveBeenCalledWith("a-1");
   await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
   expect(onDismiss).toHaveBeenCalledTimes(2);

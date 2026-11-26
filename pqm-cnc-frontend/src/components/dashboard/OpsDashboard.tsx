@@ -37,11 +37,12 @@ import { OpsRecommendations } from "./OpsRecommendations";
 import { OpsSidebar } from "./OpsSidebar";
 import { ToolWearDashboard } from "./ToolWearDashboard";
 import {
-  confirmInspection, dismissInspection, requestSecondRun, saveQualitySpec, useWearAlertDemo, WearAlertPopover,
-  type ToolWearAlert,
+  confirmInspection, deferWearTask, requestSecondRun, saveQualitySpec, useWearAlertDemo, WearAlertPopover,
+  type ToolWearAlert, type WearTask,
 } from "./WearAlertDemo";
 import { WearAlertPopup } from "./WearAlertPopup";
 import { WearInspectionPopup } from "./WearInspectionPopup";
+import { WearTaskBell } from "./WearTaskBell";
 import type { WearEvent } from "./WearEventLog";
 import { ToolWearTrend } from "./ToolWearTrend";
 import { ProcessContextPanel } from "./ProcessContextPanel";
@@ -128,36 +129,50 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   }, []);
   const wearDemo = useWearAlertDemo(appendWearEvents, resetWearEvents);
   const [monitor, setMonitor] = useState<"quality" | "tool-wear">("quality");
-  // New tool wear alerts pop up on the home page; alerts already present on load do not.
-  const seenWearAlerts = useRef<Set<string> | null>(null);
-  const [pendingWearAlerts, setPendingWearAlerts] = useState<ToolWearAlert[]>([]);
+  const seenTasks = useRef<Set<string> | null>(null);
+  const [openedTask, setOpenedTask] = useState<{ id: string; manual: boolean } | null>(null);
+  const [taskError, setTaskError] = useState("");
+  const activeTask = wearDemo?.tasks?.find(task => task.id === openedTask?.id
+    && (!task.deferred || openedTask.manual));
   useEffect(() => {
-    const alerts = wearDemo?.alerts;
-    if (!alerts) return;
-    if (seenWearAlerts.current === null) {
-      seenWearAlerts.current = new Set(alerts.map(alert => alert.alertId));
+    const tasks = wearDemo?.tasks;
+    if (!tasks) return;
+    if (seenTasks.current === null) {
+      seenTasks.current = new Set(tasks.map(task => task.id));
       return;
     }
-    const seen = seenWearAlerts.current;
-    const fresh = alerts.filter(alert => !seen.has(alert.alertId));
-    if (!fresh.length) return;
-    fresh.forEach(alert => seen.add(alert.alertId));
-    const toolWear = fresh.filter((alert): alert is ToolWearAlert => alert.kind !== "quality");
-    if (toolWear.length && monitor === "quality") setPendingWearAlerts(previous => [...previous, ...toolWear]);
-  }, [wearDemo, monitor]);
-  const dismissWearAlerts = useCallback(() => setPendingWearAlerts([]), []);
+    const fresh = tasks.filter(task => !seenTasks.current!.has(task.id));
+    fresh.forEach(task => seenTasks.current!.add(task.id));
+    const next = fresh.find(task => !task.deferred && (task.kind === "rework" || monitor === "quality"));
+    if (next && !activeTask) { setTaskError(""); setOpenedTask({ id: next.id, manual: false }); }
+    else if (openedTask && !tasks.some(task => task.id === openedTask.id)) setOpenedTask(null);
+  }, [wearDemo?.tasks, monitor, activeTask, openedTask]);
+  const postponeTask = useCallback(() => {
+    if (!activeTask) return;
+    void deferWearTask(activeTask.id).then(ok => {
+      if (ok) { setOpenedTask(p => p?.id === activeTask.id ? null : p); setTaskError(""); }
+      else setTaskError("Could not defer task. Please try again.");
+    });
+  }, [activeTask]);
+  const openTask = useCallback((task: WearTask) => {
+    setTaskError("");
+    setOpenedTask({ id: task.id, manual: true });
+    setMonitor(task.kind === "inspection" ? "quality" : "tool-wear");
+  }, []);
   // "Yes, laser inspection": the backend notifies Kafka and waits for the controller's new wear values.
   const confirmWearAlerts = useCallback((alert: ToolWearAlert) => {
     void confirmInspection(alert.alertId).then(result => {
-      if (!result) return;
-      setPendingWearAlerts([]);
+      if (!result) { setTaskError("Could not confirm inspection. Please try again."); return; }
+      setOpenedTask(p => p?.id === `inspection:${alert.alertId}` ? null : p);
       setMonitor("tool-wear");
     });
   }, []);
   const secondRun = useCallback((alertId: string) => {
-    void requestSecondRun(alertId).then(result => { if (result) setMonitor("quality"); });
+    void requestSecondRun(alertId).then(result => {
+      if (result) { setOpenedTask(p => p?.id === `rework:${alertId}` ? null : p); setMonitor("quality"); }
+      else setTaskError("Could not confirm rework. Please try again.");
+    });
   }, []);
-  const dismissInspectionResult = useCallback((alertId: string) => { void dismissInspection(alertId); }, []);
   // Start on the live quality balloon (B9): its trend is visible right away.
   const initialInspectId =
     seed.balloons.find((b) => b.id === DEFAULT_QUALITY_BALLOON_ID)?.id ??
@@ -426,11 +441,9 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
 
   return (
     <div className="flex min-h-[100dvh] bg-[#0b111b] text-foreground">
-      {monitor === "quality" && (
-        <WearAlertPopup alerts={pendingWearAlerts} destinations={wearDemo?.destinations?.filter(name => name !== "kafka")}
-          onConfirm={confirmWearAlerts} onDismiss={dismissWearAlerts} />
-      )}
-      <WearInspectionPopup inspection={wearDemo?.inspection} onSecondRun={secondRun} onDismiss={dismissInspectionResult} />
+      <WearAlertPopup alerts={activeTask?.alert ? [activeTask.alert] : []} destinations={wearDemo?.destinations?.filter(name => name !== "kafka")}
+        onConfirm={confirmWearAlerts} onDismiss={postponeTask} error={taskError} />
+      <WearInspectionPopup inspection={activeTask?.inspection} onSecondRun={secondRun} onDismiss={postponeTask} error={taskError} />
       <OpsSidebar onMonitorChange={setMonitor} />
       <div className="flex min-w-0 flex-1 flex-col">
         <JobContextHeader
@@ -443,6 +456,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
           onLayoutLockedChange={setLayoutLocked}
           monitorTabs={monitorTabs}
           actions={monitor === "quality" ? <WearAlertPopover snapshot={wearDemo} /> : undefined}
+          notifications={<WearTaskBell tasks={wearDemo?.tasks ?? []} onOpen={openTask} />}
         />
 
         <div className="flex-1 overflow-auto p-3">

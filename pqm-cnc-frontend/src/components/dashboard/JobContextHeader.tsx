@@ -21,6 +21,7 @@ export function JobContextHeader({
   onLoadNextPiece,
   actions,
   monitorTabs,
+  notifications,
 }: {
   job: JobContext;
   selected: DrawingBalloon | null;
@@ -37,6 +38,7 @@ export function JobContextHeader({
   actions?: ReactNode;
   /** Monitoring view switch (Product Quality / Tool Wear), shown at the end of the machine info row. */
   monitorTabs?: ReactNode;
+  notifications?: ReactNode;
 }) {
   const product =
     drawing?.jobId && drawing.jobId !== "_uploads"
@@ -125,13 +127,7 @@ export function JobContextHeader({
           </span>
           <LiveClock className="text-xs text-[#9eb0c0]" />
           {actions}
-          <span
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#243141] bg-[#121a24] text-sm text-[#8fa3b5]"
-            title="Notifications"
-            aria-hidden
-          >
-            🔔
-          </span>
+          {notifications}
         </div>
       </div>
 

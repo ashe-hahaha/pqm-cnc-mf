@@ -104,6 +104,53 @@ def receive_photo(service, **overrides):
     return image
 
 
+def test_deferred_tasks_persist_and_complete_once_without_sending_when_deferred(tmp_path):
+    settings, service = make_service(tmp_path)
+    alert = make_alert(service)
+    task = service.snapshot()["tasks"][0]
+    assert task["id"] == f'inspection:{alert["alertId"]}' and not task["deferred"]
+    before = outbox(service)
+    service.defer_task(task["id"])
+    service.defer_task(task["id"])
+    assert outbox(service) == before  # postponing is never a machine command
+    other_client = WearAlerts(settings)
+    assert other_client.snapshot()["tasks"][0]["deferred"]
+    other_client.start_inspection(alert["alertId"])
+    service.start_inspection(alert["alertId"])
+    assert service.snapshot()["tasks"] == []
+    assert len(outbox(service)) == len(before) + 1
+    receive_photo(service)
+    rework = other_client.snapshot()["tasks"][0]
+    assert rework["kind"] == "rework" and rework["inspection"]["result"] is None
+    service.defer_task(rework["id"])
+    assert other_client.snapshot()["tasks"][0]["deferred"]
+    service.on_wear("25", 0.08, 0.03, "2026-11-26T01:00:00Z")
+    assert other_client.snapshot()["tasks"][0]["inspection"]["result"]["actual"]["diameter"] == 0.08
+    service.request_second_run(alert["alertId"])
+    other_client.request_second_run(alert["alertId"])
+    assert other_client.snapshot()["tasks"] == []
+    assert len(outbox(service)) == len(before) + 2
+    with pytest.raises(HTTPException) as error:
+        service.defer_task(rework["id"])
+    assert error.value.status_code == 409
+    service.reset()
+    assert other_client.snapshot()["tasks"] == []
+    with closing(sqlite3.connect(service.path)) as db:
+        assert db.execute("SELECT COUNT(*) FROM deferred_tasks").fetchone()[0] == 0
+
+
+def test_task_list_includes_old_alerts_and_excludes_superseded_inspections(tmp_path):
+    _, service = make_service(tmp_path)
+    alerts = [make_alert(service) for _ in range(22)]
+    assert len(service.snapshot()["tasks"]) == 22  # not truncated by the snapshot's 20-alert limit
+    confirm(service, alerts[0])
+    receive_photo(service)
+    rework_id = f'rework:{alerts[0]["alertId"]}'
+    service.defer_task(rework_id)
+    confirm(service, alerts[1])
+    assert rework_id not in {task["id"] for task in service.snapshot()["tasks"]}
+
+
 def test_no_prediction_timer_after_first_run_end(tmp_path, monkeypatch):
     async def run():
         _, service = make_service(tmp_path)

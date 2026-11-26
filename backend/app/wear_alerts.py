@@ -154,6 +154,7 @@ class WearAlerts:
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS deferred_tasks (id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS inspections (
                     seq INTEGER PRIMARY KEY, alert_id TEXT NOT NULL UNIQUE, body TEXT NOT NULL
                 );
@@ -183,6 +184,7 @@ class WearAlerts:
             last_qc = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
             tool_measurement = db.execute("SELECT body FROM demo_tool_measurement WHERE id=1").fetchone()
             inspection = db.execute("SELECT body FROM inspections ORDER BY seq DESC LIMIT 1").fetchone()
+            tasks = self.pending_tasks(db)
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
                 "history": [json.loads(row[0]) for row in reversed(history)],
@@ -196,10 +198,39 @@ class WearAlerts:
                 "ncWatch": self.nc_status(),
                 "cutting": dict(self.cutting),
                 "inspection": json.loads(inspection[0]) if inspection else None,
+                "tasks": tasks,
                 "nextIndex": cursor % len(PREDICTION_SERIES) + 1,
                 "destinations": self.destinations, "pendingNotifications": pending,
                 "alerts": [json.loads(row[0]) for row in alerts],
                 "events": [json.loads(row[0]) for row in reversed(events)]}
+
+    def pending_tasks(self, db):
+        deferred = {row[0] for row in db.execute("SELECT id FROM deferred_tasks")}
+        inspections = {row[0]: json.loads(row[1]) for row in db.execute("SELECT alert_id, body FROM inspections")}
+        tasks = []
+        for (body,) in db.execute("SELECT body FROM alerts ORDER BY seq DESC"):
+            alert = json.loads(body)
+            if alert.get("kind") != "tool_wear" or alert["alertId"] in inspections:
+                continue
+            task_id = f'inspection:{alert["alertId"]}'
+            tasks.append({"id": task_id, "kind": "inspection", "deferred": task_id in deferred,
+                          "timestampUtc": alert["timestampUtc"], "toolNo": alert["toolNo"], "alert": alert})
+        for inspection in inspections.values():
+            if inspection["status"] != "result_ready" or not inspection.get("image"):
+                continue
+            task_id = f'rework:{inspection["alertId"]}'
+            tasks.append({"id": task_id, "kind": "rework", "deferred": task_id in deferred,
+                          "timestampUtc": inspection["image"]["receivedAt"], "toolNo": inspection["toolNo"],
+                          "inspection": inspection})
+        return sorted(tasks, key=lambda task: task["timestampUtc"], reverse=True)
+
+    def defer_task(self, task_id):
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if not any(task["id"] == task_id for task in self.pending_tasks(db)):
+                raise HTTPException(409, "Task is no longer pending")
+            db.execute("INSERT OR IGNORE INTO deferred_tasks VALUES (?)", (task_id,))
+        return {"id": task_id, "deferred": True}
 
     def update_first_cutting(self, line):
         if not self.settings.tool_wear_demo_enabled or self.cutting["run"] != 1:
@@ -561,7 +592,7 @@ class WearAlerts:
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections", "demo_tool_measurement"):
+            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections", "demo_tool_measurement", "deferred_tasks"):
                 db.execute(f"DELETE FROM {table}")
             for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
                 stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()
@@ -855,6 +886,14 @@ async def second_run(request: Request, alert_id: str):
     service = enabled_service(request)
     result = await asyncio.to_thread(service.request_second_run, alert_id)
     service.arm_second_cutting(alert_id)
+    service.notify_listeners()
+    return result
+
+
+@router.post("/tasks/{task_id}/defer")
+async def defer_task(request: Request, task_id: str):
+    service = enabled_service(request)
+    result = await asyncio.to_thread(service.defer_task, task_id)
     service.notify_listeners()
     return result
 

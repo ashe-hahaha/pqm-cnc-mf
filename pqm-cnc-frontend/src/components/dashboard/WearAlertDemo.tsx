@@ -47,6 +47,8 @@ export type WearInspection = {
   };
 };
 export type QualitySpec = { nominal: number; upperTol: number; lowerTol: number };
+export type WearTask = { id: string; kind: "inspection" | "rework"; deferred: boolean; timestampUtc: string;
+  toolNo: string | number; alert?: ToolWearAlert; inspection?: WearInspection };
 /** Controller NC line watch: the backend starts a prediction when the value changes to one of `triggerValues`. */
 export type NcWatch = { field: string; triggerValues: string[]; rangeValues?: [number, number]; running: boolean; value: string | null; lastTriggerAt: string | null };
 export type WearAlertSnapshot = {
@@ -73,6 +75,7 @@ export type WearAlertSnapshot = {
   /** 1-based index the next automatic trigger will use. */
   nextIndex?: number;
   alerts: WearAlert[];
+  tasks?: WearTask[];
   /** Notification targets the backend sends tool wear alerts to (e.g. "kafka", "temi"). */
   destinations?: string[];
   /** Notifications queued but not delivered yet (a growing number means sends are failing). */
@@ -96,6 +99,13 @@ function requestWearReset() {
 
 const base = (process.env.NEXT_PUBLIC_DATA_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 const endpoint = `${base}/api/tool-wear/demo`;
+export async function deferWearTask(id: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${endpoint}/tasks/${encodeURIComponent(id)}/defer`, { method: "POST" });
+    requestWearRefresh();
+    return response.ok;
+  } catch { return false; }
+}
 const fields = ["diameter", "length"] as const;
 const fieldStyle = "w-full rounded border border-[#314254] bg-[#0c1722] p-2 text-[#c6d7e4]";
 const buttonStyle = "rounded border border-[#385064] px-3 py-2 text-xs text-[#a5d8fa] disabled:opacity-50";

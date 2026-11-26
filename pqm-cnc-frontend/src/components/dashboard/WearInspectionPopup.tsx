@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { toolKey, toolLabel } from "@/lib/toolNumber";
 import type { WearInspection } from "./WearAlertDemo";
+import { usePopupDrag } from "./usePopupDrag";
 
 const METRICS = [
   { key: "diameter", label: "Diameter wear" },
@@ -13,15 +14,17 @@ const METRICS = [
  * Second popup: a new inspection image arrived. Shows available measured wear against the
  * prediction, then asks whether to do a second run.
  */
-export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
+export function WearInspectionPopup({ inspection, onSecondRun, onDismiss, error }: {
   inspection: WearInspection | null | undefined;
   onSecondRun: (alertId: string) => void;
   onDismiss: (alertId: string) => void;
+  error?: string;
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const ready = inspection?.status === "result_ready" && inspection.image != null;
   const result = inspection?.result;
   const alertId = inspection?.alertId;
+  const drag = usePopupDrag(alertId);
 
   useEffect(() => {
     if (!alertId || !ready) return;
@@ -34,9 +37,9 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
   if (!inspection || !ready) return null;
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/65 p-4">
-      <div role="alertdialog" aria-modal="true" aria-labelledby="wear-inspection-title" aria-describedby="wear-inspection-body"
-        className="w-[min(92vw,26rem)] rounded-xl border border-[#3d8fd1]/50 bg-[#101a26] p-5 shadow-2xl shadow-black/60">
-        <div className="min-w-0">
+      <div ref={drag.ref} style={drag.style} role="alertdialog" aria-modal="true" aria-labelledby="wear-inspection-title" aria-describedby="wear-inspection-body"
+        className="max-h-[calc(100dvh-2rem)] w-[min(92vw,26rem)] overflow-auto rounded-xl border border-[#3d8fd1]/50 bg-[#101a26] p-5 shadow-2xl shadow-black/60">
+        <div {...drag.titleProps} className="min-w-0 cursor-move touch-none select-none">
           <h2 id="wear-inspection-title" className="text-sm font-semibold text-foreground">Laser inspection result</h2>
           <p className="text-[11px] text-[#8fa3b5]">
             {toolLabel(toolKey(inspection.toolNo))} · {new Date(inspection.image!.receivedAt).toLocaleString()}
@@ -59,10 +62,11 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
         </ul>
         {!result && <p className="mt-2 text-xs text-[#8fa3b5]">Waiting for measurement…</p>}
         <p className="mt-3 text-xs text-[#c6d7e4]">Do you want to perform rework?</p>
+        {error && <p role="alert" className="mt-2 text-xs text-rose-300">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" onClick={() => onDismiss(inspection.alertId)}
             className="rounded border border-[#314254] px-3 py-1.5 text-xs text-[#8fa3b5] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
-            Not now
+            Later
           </button>
           <button ref={confirmRef} type="button" onClick={() => onSecondRun(inspection.alertId)}
             className="rounded border border-[#3d8fd1]/60 bg-[#23425b] px-3 py-1.5 text-xs font-semibold text-[#a5d8fa] hover:bg-[#2b5272] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
