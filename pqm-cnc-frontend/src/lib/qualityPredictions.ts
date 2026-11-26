@@ -34,13 +34,12 @@ export type QualityHistoryPoint = {
  * It never changes with triggers, so the timestamp is a constant.
  */
 export function seriesHistory(
-  series: readonly { index: number; quality?: number }[] | undefined,
+  series: readonly { index: number; quality?: number; qcValue?: number | null }[] | undefined,
 ): QualityHistoryPoint[] {
   return (series ?? []).map((item) => ({
     index: item.index,
     quality: item.quality,
-    // Mock measurements share the prediction's sample index for finished balloons.
-    qcValue: [3, 6, 9].includes(item.index) ? item.quality : undefined,
+    qcValue: item.qcValue ?? undefined,
     timestampUtc: "1970-01-01T00:00:00.000Z",
   }));
 }
@@ -51,7 +50,7 @@ type Spec = Pick<DrawingBalloon, "nominal" | "upperTol" | "lowerTol" | "unit">;
 const oneSided = (b: Spec) => b.nominal === 0 && b.lowerTol === 0;
 
 function roundFor(value: number, span: number): number {
-  const digits = span >= 1 ? 2 : span >= 0.1 ? 3 : 4;
+  const digits = 5;
   const k = 10 ** digits;
   return Math.round(value * k) / k;
 }

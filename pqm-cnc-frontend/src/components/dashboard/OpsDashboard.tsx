@@ -314,7 +314,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     // (until the user sets their own).
     const withDefaults = hasFixedSeries
       ? data.balloons.map((b) => b.source === "manual" && b.id !== qualityId && !tolerances[b.id]
-        ? { ...b, ...DEFAULT_SERIES_SPEC } : b)
+        ? { ...b, ...(wearDemo?.fixedQualitySpec ?? DEFAULT_SERIES_SPEC) } : b)
       : data.balloons;
     const toleranced = applyTolerances(withDefaults, backendQualitySpec
       ? { ...tolerances, [qualityId]: backendQualitySpec } : tolerances);
@@ -325,7 +325,7 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
       const value = b.source === "manual" ? fixedQuality : undefined;
       return typeof value === "number" ? { ...b, risk: qualityRisk(value, b) } : b;
     });
-  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, cutting, hasFixedSeries, fixedSeries]);
+  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, wearDemo?.fixedQualitySpec, cutting, hasFixedSeries, fixedSeries]);
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),

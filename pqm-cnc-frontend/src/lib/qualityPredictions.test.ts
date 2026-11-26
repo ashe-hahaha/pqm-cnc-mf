@@ -76,7 +76,8 @@ describe("quality predictions from backend history", () => {
 
 describe("seriesHistory (fixed record of the balloons that are not live)", () => {
   it("adds mock measurements at samples 3, 6 and 9 only, aligned with their predictions", () => {
-    const history = seriesHistory(Array.from({ length: 10 }, (_, i) => ({ index: i + 1, quality: 18 + i * 0.001 })));
+    const history = seriesHistory(Array.from({ length: 10 }, (_, i) => ({ index: i + 1, quality: 18 + i * 0.001,
+      qcValue: [3, 6, 9].includes(i + 1) ? 18 + i * 0.001 : null })));
     const trend = qualityTrendFromHistory(history, { unit: "mm", ...DEFAULT_SERIES_SPEC });
     const measured = trend.filter(point => point.qcValue !== null);
     expect(measured.map(point => point.index)).toEqual([3, 6, 9]);

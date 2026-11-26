@@ -7,7 +7,7 @@ import { TrendPanel } from "./TrendPanel";
 
 const TREND_W = 640;
 const TREND_H = 210;
-const PAD = { l: 40, r: 12, t: 14, b: 30 };
+const PAD = { l: 56, r: 12, t: 14, b: 30 };
 
 export function QualityTrend({
   balloonCode,
@@ -134,7 +134,7 @@ function TrendChart({ points }: { points: QualityTrendPoint[] }) {
   const hover = hoverIdx != null ? layout.dots[hoverIdx] : null;
   const uslY = layout.yOf(usl);
   const lslY = layout.yOf(lsl);
-  const decimals = usl - lsl >= 0.1 ? 3 : 4;
+  const decimals = 5;
   const lastIdx = layout.dots.length - 1;
 
   return (
