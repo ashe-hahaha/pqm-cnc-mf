@@ -5,7 +5,7 @@ import { Panel } from "./Panel";
 import type { WearEvent } from "./WearEventLog";
 
 type Values = { diameter: number; length: number };
-export type WearPrediction = Values & { predictionId?: string; machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
+export type WearPrediction = Values & { measured?: Values | null; predictionId?: string; machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
 type Prediction = WearPrediction;
 export type ToolWearAlert = {
   kind?: "tool_wear";
@@ -60,7 +60,8 @@ export type WearAlertSnapshot = {
   /** Fixed prediction values that each trigger cycles through. */
   series?: { index: number; diameter: number; length: number; quality?: number }[];
   /** Finished B1–B8 quality history, separate from B9's abnormal prediction demo. */
-  fixedQualitySeries?: { index: number; quality: number }[];
+  fixedQualitySeries?: { index: number; quality: number; qcValue?: number | null }[];
+  fixedQualitySpec?: QualitySpec;
   /** Balloon the quality value of each prediction belongs to. */
   qualityBalloonId?: string;
   /** Tolerance of the quality balloon, stored by the backend (used by every trigger). */

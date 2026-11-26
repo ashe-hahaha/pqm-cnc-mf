@@ -160,13 +160,17 @@ it("shows only the demo inspection result as one measurement with two axis marke
 it("refreshes the history on demand with the dates currently chosen, without polling", async () => {
   vi.setSystemTime(new Date("2026-11-04T12:00:00Z"));
   await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
-  await act(async () => vi.advanceTimersByTimeAsync(10));       // default range: the last 7 days up to today
+  await act(async () => vi.advanceTimersByTimeAsync(10));       // default range: today (one local calendar day)
   vi.mocked(historyState.reload).mockClear();
   const button = () => host.querySelector<HTMLButtonElement>('button[aria-label="Refresh wear history"]')!;
   expect(button().textContent).toBe("Refresh");
 
   const end = host.querySelector<HTMLInputElement>('input[aria-label="Wear history end date"]')!;
+  const startInput = host.querySelector<HTMLInputElement>('input[aria-label="Wear history start date"]')!;
+  expect(startInput.value).toBe("2026-11-04");
+  expect(end.value).toBe("2026-11-04");
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => { setValue.call(startInput, "2026-10-29"); startInput.dispatchEvent(new Event("input", { bubbles: true })); });
   await act(async () => { setValue.call(end, "2026-11-03"); end.dispatchEvent(new Event("input", { bubbles: true })); });
   await act(async () => button().click());
   expect(historyState.reload).toHaveBeenCalledTimes(1);

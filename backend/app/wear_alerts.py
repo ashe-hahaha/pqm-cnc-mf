@@ -18,13 +18,13 @@ from pydantic import BaseModel, Field
 from app.config import Settings
 from app.signals import sse
 from app.wear_history import tool_key
-from app.wear_series import (DEFAULT_QUALITY_SPEC, FIXED_QUALITY_SERIES, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
+from app.wear_series import (DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/tool-wear/demo")
 METRICS = ("diameter", "length")
-RESET_RECORDS = 8  # predictions the demo is reset to (series entries #1 … #8)
+RESET_RECORDS = 9  # predictions the demo is reset to (series entries #1 … #9)
 HISTORY_RETURNED = 10  # predictions included in the snapshot (sliding window)
 EVENTS_RETURNED = 100  # events included in the snapshot
 EVENTS_KEPT = 1000  # events retained in the database
@@ -143,6 +143,7 @@ class WearAlerts:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS thresholds (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS settings_migrations (name TEXT PRIMARY KEY);
                 INSERT OR IGNORE INTO thresholds VALUES (1, '{"diameter":999,"length":999}');
                 CREATE TABLE IF NOT EXISTS predictions (
                     seq INTEGER PRIMARY KEY, machine TEXT NOT NULL, tool TEXT NOT NULL, body TEXT NOT NULL
@@ -169,6 +170,26 @@ class WearAlerts:
             default = QualitySpec(nominal=DEFAULT_QUALITY_SPEC[0], upperTol=DEFAULT_QUALITY_SPEC[1],
                                   lowerTol=DEFAULT_QUALITY_SPEC[2])
             db.execute("INSERT OR IGNORE INTO quality_spec VALUES (1, ?)", (default.model_dump_json(),))
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('wear-series-20261126')").rowcount:
+                db.execute("UPDATE thresholds SET body=? WHERE id=1", (json.dumps(DEFAULT_WEAR_THRESHOLDS),))
+                # Update saved prediction history once; preserve quality, ids and timestamps.
+                for seq, body in db.execute("SELECT seq, body FROM predictions").fetchall():
+                    prediction = json.loads(body)
+                    index = prediction.get("index")
+                    if isinstance(index, int) and 1 <= index <= len(PREDICTION_SERIES):
+                        prediction.update(diameter=PREDICTION_SERIES[index - 1][0], length=PREDICTION_SERIES[index - 1][1],
+                                          measured=HISTORICAL_WEAR_MEASUREMENTS.get(index))
+                        prediction["exceeded"] = [key for key in METRICS if prediction[key] > DEFAULT_WEAR_THRESHOLDS[key]]
+                        db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
+
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('quality-dimensions-20261126')").rowcount:
+                db.execute("UPDATE quality_spec SET body=? WHERE id=1", (default.model_dump_json(),))
+                for seq, body in db.execute("SELECT seq, body FROM predictions").fetchall():
+                    prediction = json.loads(body)
+                    index = prediction.get("index")
+                    if isinstance(index, int) and 1 <= index <= len(PREDICTION_SERIES):
+                        prediction["quality"] = PREDICTION_SERIES[index - 1][2]
+                        db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
 
     def snapshot(self):
         with closing(sqlite3.connect(self.path)) as db:
@@ -190,8 +211,9 @@ class WearAlerts:
                 "history": [json.loads(row[0]) for row in reversed(history)],
                 "series": [{"index": i + 1, "diameter": d, "length": l, "quality": q}
                            for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
-                "fixedQualitySeries": [{"index": i + 1, "quality": q}
+                "fixedQualitySeries": [{"index": i + 1, "quality": q, "qcValue": FIXED_QUALITY_MEASUREMENTS.get(i + 1)}
                                        for i, q in enumerate(FIXED_QUALITY_SERIES)],
+                "fixedQualitySpec": {"nominal": DEFAULT_QUALITY_SPEC[0], "upperTol": DEFAULT_QUALITY_SPEC[1], "lowerTol": DEFAULT_QUALITY_SPEC[2]},
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
                 "lastQc": json.loads(last_qc[0]) if last_qc else None,
                 "toolMeasurement": json.loads(tool_measurement[0]) if tool_measurement else None,
@@ -496,22 +518,13 @@ class WearAlerts:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM last_qc WHERE id=1").fetchone():
                 return  # one quality measurement per demo; Reset clears it
-            spec = self.get_quality_spec(db)
-            lsl, usl = spec.nominal - spec.lowerTol, spec.nominal + spec.upperTol
-            in_spec = lsl - 1e-9 <= value <= usl + 1e-9
-            # Demo setting: a measurement outside the quality balloon's tolerance is shown as a fixed passing value instead.
-            masked = not in_spec and self.settings.tool_wear_qc_mask_out_of_spec
-            shown = self.settings.tool_wear_qc_pass_value if masked else value
-            qc = {"value": shown, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
+            qc = {"value": value, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
                   "toolNo": row.get("tool_no"), "macro": QC_MACRO}
             prediction = db.execute("SELECT body FROM predictions WHERE json_extract(body, '$.run')=2 ORDER BY seq DESC LIMIT 1").fetchone()
             qc["predictionId"] = json.loads(prediction[0])["predictionId"] if prediction else None
             db.execute("INSERT OR REPLACE INTO last_qc VALUES (1, ?)", (json.dumps(qc),))
         detail = f"Diameter {round(value, 6)} mm · macro {QC_MACRO}"
-        if masked:  # the real value stays visible here (event log / server log), not on the dashboard
-            detail += f" · outside {round(lsl, 6)}–{round(usl, 6)} mm, shown as {shown} mm"
-        logger.info("NC line %s: last QC (macro %s) = %s mm%s", NC_QC_VALUE, QC_MACRO, value,
-                    f", shown as {shown} mm (outside {lsl:g}-{usl:g})" if masked else "")
+        logger.info("NC line %s: last QC (macro %s) = %s mm", NC_QC_VALUE, QC_MACRO, value)
         self.log_event("QC measured", TOOL_NO, detail=detail)
         self.notify_listeners()
 
@@ -600,6 +613,7 @@ class WearAlerts:
                               "timestampUtc": stamp, "source": "mock", "index": i + 1,
                               "diameter": diameter, "length": length,
                               "balloonId": QUALITY_BALLOON_ID, "quality": quality, "exceeded": []}
+                prediction["measured"] = HISTORICAL_WEAR_MEASUREMENTS.get(i + 1)
                 db.execute("INSERT INTO predictions(machine, tool, body) VALUES (?, ?, ?)",
                            (machine, TOOL_NO, json.dumps(prediction)))
             db.execute("UPDATE cursor SET next_index=? WHERE id=1", (RESET_RECORDS % len(PREDICTION_SERIES),))
@@ -622,6 +636,7 @@ class WearAlerts:
                           "diameter": diameter, "length": length,
                           "balloonId": QUALITY_BALLOON_ID, "quality": quality}
             prediction["run"] = self.cutting["run"]
+            prediction["measured"] = HISTORICAL_WEAR_MEASUREMENTS.get(position + 1)
             if prediction["run"] == 2:
                 qc_row = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
                 if qc_row:

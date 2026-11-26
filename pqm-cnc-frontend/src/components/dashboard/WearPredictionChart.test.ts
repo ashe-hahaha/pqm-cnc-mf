@@ -18,7 +18,7 @@ it("draws predicted lines, red points over threshold, threshold lines and measur
     xMode: "time",
   })));
   const svg = host.querySelector('svg[role="img"]')!;
-  expect(svg.textContent).toContain("D limit 0.100 mm");
+  expect(svg.textContent).toContain("D limit 0.10000 mm");
   expect(svg.textContent).not.toContain("L limit");
   expect(host.textContent).toContain("L threshold not set");
   expect(svg.querySelectorAll('circle[fill="#fb7185"]')).toHaveLength(1);
@@ -52,5 +52,5 @@ it("keeps a 0 baseline for positive values and extends the y axis below 0 for ne
   expect(zeroY).toBeLessThan(plotBottom + 1);
   const labels = [...host.querySelectorAll('svg[role="img"] text')].map(item => item.textContent);
   expect(labels.some(text => text?.startsWith("-0.1") || text?.startsWith("-0.2"))).toBe(true);  // negative tick labels
-  expect(labels.filter(text => text === "0.00")).toHaveLength(1);           // one 0 label, no duplicate tick
+  expect(labels.filter(text => text === "0.0000")).toHaveLength(1);           // one 0 label, no duplicate tick
 });

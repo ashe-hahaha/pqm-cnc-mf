@@ -17,7 +17,7 @@ export type MeasuredWear = { t: number; diameter: number | null; length: number 
 
 const WIDTH = 640;
 const HEIGHT = 210;
-const LEFT = 40;
+const LEFT = 56;
 const TOP = 14;
 const PLOT_W = WIDTH - LEFT - 12;
 const PLOT_H = HEIGHT - TOP - 30;
@@ -105,7 +105,7 @@ export function WearPredictionChart({
         {latest && <span className="text-[10px] tabular-nums text-[#8fa3b5]">
           {SERIES.map(item => (
             <strong key={item.key} className={`ml-2 ${exceeds(item.key, latest[item.key]) ? "text-rose-300" : "text-emerald-300"}`}>
-              {item.short} {latest[item.key].toFixed(3)} mm
+              {item.short} {latest[item.key].toFixed(5)} mm
             </strong>
           ))}
         </span>}
@@ -120,18 +120,18 @@ export function WearPredictionChart({
             <rect x={LEFT} y={TOP} width={PLOT_W} height={PLOT_H} rx="3" fill="#0a1219" stroke="#243141" />
             {ticks.map(value => <g key={value}>
               <line x1={LEFT} x2={LEFT + PLOT_W} y1={y(value)} y2={y(value)} stroke="#243141" />
-              <text x={LEFT - 7} y={y(value) + 4} textAnchor="end" fontSize="10" fill="#8fa3b5">{value.toFixed(2)}</text>
+              <text x={LEFT - 7} y={y(value) + 4} textAnchor="end" fontSize="10" fill="#8fa3b5">{value.toFixed(4)}</text>
             </g>)}
             {showZero && <g data-testid="zero-line">
               <line x1={LEFT} x2={LEFT + PLOT_W} y1={y(0)} y2={y(0)} stroke="#4b6074" />
-              <text x={LEFT - 7} y={y(0) + 4} textAnchor="end" fontSize="10" fill="#c6d7e4">0.00</text>
+              <text x={LEFT - 7} y={y(0) + 4} textAnchor="end" fontSize="10" fill="#c6d7e4">0.0000</text>
             </g>}
             {visible.diameter && points.length > 1 && (
               <path d={`${lineOf("diameter")} L${px(points.length - 1)},${TOP + PLOT_H} L${px(0)},${TOP + PLOT_H} Z`} fill={`url(#${fillId})`} />
             )}
             {limits.map(item => <g key={`limit-${item.key}`}>
               <line x1={LEFT} x2={LEFT + PLOT_W} y1={y(item.limit)} y2={y(item.limit)} stroke={item.color} strokeDasharray="5 4" opacity="0.8" />
-              <text x={LEFT + PLOT_W - 4} y={y(item.limit) - 5} textAnchor="end" fontSize="10" fill={item.color}>{item.short} limit {item.limit.toFixed(3)} mm</text>
+              <text x={LEFT + PLOT_W - 4} y={y(item.limit) - 5} textAnchor="end" fontSize="10" fill={item.color}>{item.short} limit {item.limit.toFixed(5)} mm</text>
             </g>)}
             {shown.map(item => <g key={item.key} aria-label={item.label}>
               {points.length > 1 && <path d={lineOf(item.key)} fill="none" stroke={item.color} strokeWidth="2.5" strokeLinejoin="round" />}
@@ -147,7 +147,7 @@ export function WearPredictionChart({
                 return (
                   <path key={`m-${i}`} d={`M${cx},${cy - 5} L${cx + 5},${cy} L${cx},${cy + 5} L${cx - 5},${cy} Z`}
                     fill="#0a1219" stroke={item.color} strokeWidth="1.8">
-                    <title>{`Measured ${item.label} · ${new Date(m.t).toLocaleString()} · ${value.toFixed(3)} mm`}</title>
+                    <title>{`Measured ${item.label} · ${new Date(m.t).toLocaleString()} · ${value.toFixed(5)} mm`}</title>
                   </path>
                 );
               })}
@@ -172,7 +172,7 @@ export function WearPredictionChart({
               <p className="text-[#c5d4e3]">{label(hovered, hover ?? 0)} · {new Date(hovered.timestampUtc).toLocaleString()}</p>
               {shown.map(item => (
                 <p key={item.key} style={{ color: exceeds(item.key, hovered[item.key]) ? "#fda4af" : item.color }}>
-                  {item.label} {hovered[item.key].toFixed(3)} mm
+                  {item.label} {hovered[item.key].toFixed(5)} mm
                 </p>
               ))}
             </div>

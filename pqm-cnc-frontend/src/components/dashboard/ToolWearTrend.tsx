@@ -3,6 +3,7 @@
 import { TrendPanel } from "./TrendPanel";
 import type { WearAlertSnapshot } from "./WearAlertDemo";
 import { WearPredictionChart } from "./WearPredictionChart";
+import { toolWearMeasurements } from "@/lib/toolWearMeasurements";
 
 const TOOL_LABEL = "T25";
 
@@ -25,7 +26,7 @@ export function ToolWearTrend({ snapshot = null }: { snapshot?: WearAlertSnapsho
         </span>
       ) : null}>
       <WearPredictionChart points={history} thresholds={thresholds} xMode="time"
-        measured={measurement ? [{ t: Date.parse(measurement.timestampUtc), diameter: measurement.diameter, length: measurement.length }] : []}
+        measured={toolWearMeasurements(history, measurement)}
         emptyMessage="No prediction yet — trigger one from the flask icon in the top bar." />
     </TrendPanel>
   );

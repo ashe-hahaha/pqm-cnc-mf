@@ -16,18 +16,27 @@ DEFAULT_QUALITY_SPEC = (18.0, 0.1, 0.1)
 # (diameter wear mm, tool length wear mm, quality value mm: 18 + the earlier flatness values)
 PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
     # 1-9: normal, small and slowly drifting values
-    (0.050, 0.020, 18.0050),
-    (0.052, 0.021, 18.0062),
-    (0.055, 0.022, 18.0055),
-    (0.057, 0.023, 18.0073),
-    (0.060, 0.024, 18.0068),
-    (0.062, 0.026, 18.0085),
-    (0.065, 0.027, 18.0079),
-    (0.067, 0.028, 18.0092),
-    (0.070, 0.030, 18.0088),
-    # 10: abnormal, clearly higher than the rest (quality above the 18.1 mm upper limit)
-    (0.350, 0.180, 18.1500),
+    (0.1152, 0.0038, 18.0120),
+    (0.1166, 0.0040, 18.0100),
+    (0.1178, 0.0041, 17.9980),
+    (0.1181, 0.0042, 17.9930),
+    (0.1188, 0.0043, 17.9920),
+    (0.1198, 0.0045, 17.9890),
+    (0.1202, 0.0047, 17.9889),
+    (0.1208, 0.0049, 17.9798),
+    (0.1210, 0.0050, 17.9737),
+    # 10: wear exceeds its upper limits; quality falls below LSL 17.9.
+    (0.1216, 0.0053, 17.8900),
 )
 
+DEFAULT_WEAR_THRESHOLDS = {"diameter": 0.121, "length": 0.005}
+HISTORICAL_WEAR_MEASUREMENTS = {
+    3: {"diameter": 0.11779, "length": 0.00408},
+    6: {"diameter": 0.11982, "length": 0.00449},
+    9: {"diameter": 0.12098, "length": 0.00499},
+}
+
 # Finished balloons B1–B8 have a separate, entirely passing quality history.
-FIXED_QUALITY_SERIES = tuple(row[2] for row in PREDICTION_SERIES[:9]) + (18.0095,)
+FIXED_QUALITY_SERIES = (18.0120, 18.0100, 17.9980, 17.9930, 17.9920,
+                        17.9890, 17.9889, 17.9798, 17.9737, 17.9700)
+FIXED_QUALITY_MEASUREMENTS = {3: 17.9981, 6: 17.9889, 9: 17.9738}

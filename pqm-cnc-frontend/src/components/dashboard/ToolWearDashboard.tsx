@@ -10,12 +10,14 @@ import { ColResizeHandle } from "./ResizableBox";
 import { useWearHistory } from "@/lib/useWearHistory";
 import { WearPredictionChart, type MeasuredWear } from "./WearPredictionChart";
 import { toolKey, toolLabel } from "@/lib/toolNumber";
+import { toolWearMeasurements } from "@/lib/toolWearMeasurements";
 import { WearEventLog, type WearEvent } from "./WearEventLog";
 import { WearAlertForm, requestWearRefresh, type WearAlertSnapshot } from "./WearAlertDemo";
 
 const DEFAULT_TOOL = "25";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HISTORY_DAYS = 7;
+const DEFAULT_HISTORY_DAYS = 1;
 
 /** YYYY-MM-DD of a moment in the browser's local time zone (the chart labels are local too). */
 function localDate(ms: number) {
@@ -84,7 +86,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
   const [dates, setDates] = useState({ start: "", end: "" });
   const [bounds, setBounds] = useState<{ start: string; end: string } | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  const history = useWearHistory(HISTORY_DAYS * 24 * 60, bounds?.start, bounds?.end, selectedTool, bounds !== null);
+  const history = useWearHistory(DEFAULT_HISTORY_DAYS * 24 * 60, bounds?.start, bounds?.end, selectedTool, bounds !== null);
   const [columns, setColumns] = useState({ tools: 240, diameter: 50, history: 50 });
   const gridRef = useRef<HTMLDivElement>(null);
   const controller = latestByTool[selectedTool];
@@ -98,9 +100,9 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
   // Exactly one inspection measurement per demo, independently of controller history polling.
   const measurement = wearDemo?.toolMeasurement;
   const measurementTime = measurement ? Date.parse(measurement.timestampUtc) : NaN;
-  const measured: MeasuredWear[] = measurement && toolKey(measurement.toolNo) === selectedTool
+  const measured: MeasuredWear[] = toolWearMeasurements(predictions, measurement && toolKey(measurement.toolNo) === selectedTool
     && measurementTime >= rangeStart && measurementTime < rangeEnd
-    ? [{ t: measurementTime, diameter: measurement.diameter, length: measurement.length }] : [];
+    ? measurement : undefined);
   const historyData = history.data;
   const tools = [...new Set([DEFAULT_TOOL, ...Object.keys(latestByTool), ...history.discoveredTools])];
   useEffect(() => {
@@ -119,7 +121,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
     const timer = setTimeout(() => {
       const now = Date.now();
       const end = localDate(now);
-      const start = localDate(new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate() - (HISTORY_DAYS - 1)).getTime());
+      const start = localDate(new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate() - (DEFAULT_HISTORY_DAYS - 1)).getTime());
       setDates({ start, end });
       setBounds(dateBounds(start, end));
     }, 0);
@@ -275,7 +277,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
                 <WearPredictionChart points={predictions} thresholds={wearDemo?.thresholds} measured={measured} xMode="time"
                   emptyMessage="No prediction or measured value in this range." />
                 <p className="shrink-0 text-[10px] text-[#70889c]">
-                  {predictions.length} predicted · {measured.length} measured · inspection result
+                  {predictions.length} predicted · {measured.length} measured
                   {historyData?.end ? ` · Through ${new Date(historyData.end).toLocaleString()}` : ""}
                 </p>
               </Panel>

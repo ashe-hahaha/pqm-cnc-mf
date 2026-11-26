@@ -66,7 +66,7 @@ backend 启动时立即为 `SIGNALS_MACHINE_ID` 建立持续监听，采集最�
 
 Inspection / Rework 待办由 snapshot 的 `tasks` 返回，包含完整弹窗数据，不受 alerts 最近 20 条的显示限制。`POST /api/tool-wear/demo/tasks/{task_id}/defer` 持久化稍后处理状态，不改变 inspection 状态、不发送指令；任务确认后自动从待办移除，superseded/dismissed inspection 不再显示，Reset 清除。顶部铃铛列出所有待办，可重新打开并确认；首次加载只列出历史任务，新任务可自动弹窗。两个 popup 支持标题栏拖动，Later / Esc 都暂缓处理。多客户端通过现有 SSE 更新共享任务状态。
 
-确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["956"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。原 QC 超限显示替换配置仍适用。
+确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["956"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。QC 原值直接保存并显示，不做超限替换。
 
 B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，22 或 29 任意一个结束并触发一次 prediction（默认 `TOOL_WEAR_NC_TRIGGER_VALUES=22,29`；同一次 run 不重复触发）。首次窗口按顺序恢复 cutting 状态，但不回放历史 prediction。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，由 NC 73–74 触发（已移除 120 秒保底）；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。
 
@@ -222,3 +222,7 @@ GET /api/tool-wear/history?machine_id=Makino_01&start=2026-11-04T00:00:00Z&end=2
 `TOOL_WEAR_HISTORY_SOURCE=database` 可切回原 SQL adapter，此时仍需 tool_no、start、end 和 TOOL_WEAR_DB_* 配置；不自动在 HTTP 故障时切源。HTTP 方式不需要数据库账号。修改 backend 配置后重启，frontend 仍只访问自己的 backend。
 
 第二个 inspection popup 由确认后新收到的 Kafka 图片触发，按 machine/tool 匹配并检查 receivedAt 晚于 confirmedAt；已有图片、重复图片不重开。图片先到时 actual wear 显示等待，wear 随后更新；wear 先到先保存并画 measured markers，等待图片再弹。Rework 可在图片到达后确认，wear 即使稍后到也继续保存，本次 demo 仍只记录一组。
+
+Tool wear demo 序列使用 wear_series.py 的十组 diameter/length 值，默认阈值分别为 0.121 / 0.005 mm，严格大于才报警。Reset 预置 1–9，下一次预测第 10 组。历史 measured markers 固定附在第 3/6/9 组，inspection actual measurement 为额外一组；两处趋势图共用。一次性 settings_migrations 更新旧 threshold 和已保存 prediction 的 wear 值，保留 quality/ID/时间，之后手动修改的阈值不会被启动覆盖。Tool Wear 日期默认今天（本地一个日历日），仍可手动选择至多七天。
+
+Quality 序列集中在 app/wear_series.py：B9 前九组使用 dimension，第十组为 17.89，默认阈值 17.9–18.1；B1–B8 独立十组均正常，FIXED_QUALITY_MEASUREMENTS 配置第 3/6/9 组 measured 值。quality-dimensions-20261126 一次性迁移已有 quality prediction，保留 ID/时间/关联。已移除 QC 修正配置，旧环境变量不再生效；部署后 Reset 清除旧 session 保存的 QC。

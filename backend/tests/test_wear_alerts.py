@@ -22,6 +22,63 @@ def make_service(tmp_path):
     return settings, WearAlerts(settings)
 
 
+def test_new_wear_series_defaults_reset_and_tenth_prediction_alarm(tmp_path):
+    settings, service = make_service(tmp_path)
+    assert service.snapshot()["thresholds"] == {"diameter": 0.121, "length": 0.005}
+    for index in range(1, 10):
+        assert service.record(MockPrediction(index=index))["alert"] is None
+    service.reset()
+    history = service.snapshot()["history"]
+    assert len(history) == 9 and service.snapshot()["nextIndex"] == 10
+    assert [p["index"] for p in history if p["measured"] is not None] == [3, 6, 9]
+    assert [p["quality"] for p in history] == [row[2] for row in PREDICTION_SERIES[:9]]
+    for point in history:
+        if point["measured"]:
+            for key in ("diameter", "length"):
+                assert abs(point[key] - point["measured"][key]) < 0.00005
+    result = service.record(MockPrediction())
+    assert result["prediction"]["index"] == 10 and result["alert"]["metrics"] == ["diameter", "length"]
+    assert result["prediction"]["quality"] == 17.89
+    service.set_thresholds(WearValues(diameter=0.13, length=0.006))
+    assert WearAlerts(settings).snapshot()["thresholds"] == {"diameter": 0.13, "length": 0.006}
+
+
+def test_quality_dimension_series_and_one_time_migration(tmp_path):
+    settings, service = make_service(tmp_path)
+    expected = [18.012, 18.01, 17.998, 17.993, 17.992, 17.989, 17.9889, 17.9798, 17.9737, 17.89]
+    assert [point["quality"] for point in service.snapshot()["series"]] == expected
+    assert all(service.record(MockPrediction(index=index))["qualityAlert"] is None for index in range(1, 10))
+    result = service.record(MockPrediction(index=10))
+    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.9
+    fixed = service.snapshot()["fixedQualitySeries"]
+    assert len(fixed) == 10 and all(17.9 <= point["quality"] <= 18.1 for point in fixed)
+    assert [point["index"] for point in fixed if point["qcValue"] is not None] == [3, 6, 9]
+    assert all(abs(point["qcValue"] - point["quality"]) < 0.001 for point in fixed if point["qcValue"] is not None)
+    stamp, prediction_id = result["prediction"]["timestampUtc"], result["prediction"]["predictionId"]
+    with closing(sqlite3.connect(service.path)) as db, db:
+        db.execute("DELETE FROM settings_migrations WHERE name='quality-dimensions-20261126'")
+        old = {**result["prediction"], "quality": 18.15}
+        db.execute("UPDATE predictions SET body=? WHERE json_extract(body, '$.index')=10", (json.dumps(old),))
+    migrated = WearAlerts(settings).snapshot()["prediction"]
+    assert migrated["quality"] == 17.89 and migrated["timestampUtc"] == stamp and migrated["predictionId"] == prediction_id
+
+
+def test_saved_wear_history_is_migrated_once_without_changing_quality_or_timestamps(tmp_path):
+    settings, service = make_service(tmp_path)
+    old = service.record(MockPrediction(index=3))["prediction"]
+    with closing(sqlite3.connect(service.path)) as db, db:
+        db.execute("DELETE FROM settings_migrations WHERE name='wear-series-20261126'")
+        db.execute("UPDATE thresholds SET body=?", (json.dumps({"diameter": 999, "length": 999}),))
+        legacy = {**old, "diameter": 0.055, "length": 0.022, "quality": 18.055}
+        db.execute("UPDATE predictions SET body=?", (json.dumps(legacy),))
+    migrated = WearAlerts(settings).snapshot()
+    point = migrated["history"][0]
+    assert (point["diameter"], point["length"], point["quality"]) == (0.1178, 0.0041, 18.055)
+    assert point["timestampUtc"] == old["timestampUtc"] and point["predictionId"] == old["predictionId"]
+    assert point["measured"] == {"diameter": 0.11779, "length": 0.00408}
+    assert migrated["thresholds"] == {"diameter": 0.121, "length": 0.005}
+
+
 def test_first_cutting_reads_initial_window_and_finishes_at_29(tmp_path):
     _, service = make_service(tmp_path)
     machine = service.settings.signals_machine_id
@@ -201,8 +258,9 @@ def test_finished_balloon_quality_history_is_all_within_default_tolerance(tmp_pa
     fixed = snapshot["fixedQualitySeries"]
     assert [point["index"] for point in fixed] == list(range(1, 11))
     assert all(17.9 <= point["quality"] <= 18.1 for point in fixed)
-    assert fixed[-1]["quality"] == 18.0095
-    assert snapshot["series"][-1]["quality"] == 18.15
+    assert fixed[-1]["quality"] == 17.97
+    assert [p["index"] for p in fixed if p["qcValue"] is not None] == [3, 6, 9]
+    assert snapshot["series"][-1]["quality"] == 17.89
 
 
 def test_predictions_cycle_through_series_and_persist_cursor(tmp_path):
@@ -233,7 +291,7 @@ def test_selected_index_is_used_then_cycle_continues(tmp_path):
 
 def test_every_exceeding_prediction_alerts_and_enqueues(tmp_path):
     _, service = make_service(tmp_path)
-    service.set_thresholds(WearValues(diameter=0.1, length=999))
+    service.set_thresholds(WearValues(diameter=0.121, length=999))
 
     assert service.record(MockPrediction(index=9))["alert"] is None  # 0.07 mm, normal
     first = service.record(MockPrediction(index=10))["alert"]  # 0.35 mm, the abnormal value
@@ -329,20 +387,20 @@ def test_quality_alert_follows_the_stored_tolerance(tmp_path):
     # Default spec 18 ± 0.1 mm: #9 (18.0088) is fine, #10 (18.15) is above USL 18.1.
     assert service.record(MockPrediction(index=9))["qualityAlert"] is None
     alert = service.record(MockPrediction(index=10))["qualityAlert"]
-    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "upper", 18.15, 18.1)
+    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "lower", 17.89, 17.9)
 
     # A wider tolerance makes the same value acceptable again.
-    service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.2, lowerTol=0.1))
+    service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.1, lowerTol=0.2))
     assert service.record(MockPrediction(index=10))["qualityAlert"] is None
     # A tighter one alerts on a value that used to be fine, and survives a restart.
     service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.005, lowerTol=0))
     restarted = WearAlerts(settings)
     assert restarted.snapshot()["qualitySpec"]["upperTol"] == 0.005
-    assert restarted.record(MockPrediction(index=9))["qualityAlert"]["limit"] == 18.005
+    assert restarted.record(MockPrediction(index=9))["qualityAlert"]["limit"] == 18
     # Below the lower limit alerts too.
-    restarted.set_quality_spec(QualitySpec(nominal=18.02, upperTol=0.02, lowerTol=0.01))
+    restarted.set_quality_spec(QualitySpec(nominal=18.03, upperTol=0.02, lowerTol=0.01))
     lower = restarted.record(MockPrediction(index=1))["qualityAlert"]
-    assert (lower["side"], lower["limit"]) == ("lower", 18.01)
+    assert (lower["side"], lower["limit"]) == ("lower", 18.02)
 
 
 def batch(*rows):
@@ -402,7 +460,7 @@ def test_first_run_end_predicts_once_for_either_end_line(tmp_path, monkeypatch, 
         service.reset()
         service.on_signals(machine, batch((6, 5), (7, end)), state)
         await asyncio.gather(*service.background)
-        assert service.snapshot()["prediction"]["index"] == 9
+        assert service.snapshot()["prediction"]["index"] == 10
         assert service.first_run_prediction_started
         await service.close()
     asyncio.run(run())
@@ -549,7 +607,7 @@ def test_demo_measurements_persist_once_and_qc_waits_for_rework_prediction(tmp_p
     asyncio.run(run())
 
 
-def test_out_of_spec_qc_is_shown_as_the_fixed_passing_value(tmp_path):
+def test_qc_always_shows_the_real_value_even_outside_tolerance(tmp_path):
     async def run():
         settings, service = make_service(tmp_path)
         machine, state = settings.signals_machine_id, {}
@@ -564,15 +622,14 @@ def test_out_of_spec_qc_is_shown_as_the_fixed_passing_value(tmp_path):
         service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)  # first batch
         assert measure(18.05) == 18.05                  # inside 18 ± 0.1 (default spec): shown as measured
         assert measure(18.1) == 18.1 and measure(17.9) == 17.9   # the limits themselves pass
-        assert measure(18.2) == 18.067                  # above USL: the fixed passing value
-        assert measure(17.5) == 18.067                  # below LSL
+        assert measure(18.2) == 18.2
+        assert measure(17.5) == 17.5
+        assert measure(17.89012) == 17.89012
         details = [e["detail"] for e in service.snapshot()["events"] if e["label"] == "QC measured"]
-        assert "18.2 mm" in details[-2] and "shown as 18.067 mm" in details[-2]  # the real value stays in the event log
-        assert "shown as" not in details[0]
+        assert all("shown as" not in detail for detail in details)
 
         service.set_quality_spec(QualitySpec(nominal=18.2, upperTol=0.05, lowerTol=0.05))  # follows the stored tolerance
         assert measure(18.2) == 18.2
-        settings.tool_wear_qc_mask_out_of_spec = False  # the demo substitution can be switched off
         assert measure(19.0) == 19.0
 
     asyncio.run(run())
@@ -657,6 +714,7 @@ def test_the_delivery_loop_drops_expired_notifications_instead_of_sending_them(t
 
 def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):
     _, service = make_service(tmp_path)
+    service.set_thresholds(WearValues(diameter=999, length=999))
     result = service.record(MockPrediction(index=10))
     assert result["alert"] is None  # default tool wear thresholds are far above
     alerts = service.snapshot()["alerts"]
@@ -665,7 +723,7 @@ def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):
         assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
 
 
-def test_reset_restores_the_first_eight_predictions(tmp_path):
+def test_reset_restores_the_first_nine_predictions(tmp_path):
     _, service = make_service(tmp_path)
     service.set_thresholds(WearValues(diameter=0.1, length=999))
     for _ in range(12):
@@ -674,15 +732,15 @@ def test_reset_restores_the_first_eight_predictions(tmp_path):
 
     service.reset()
     snapshot = service.snapshot()
-    assert [item["index"] for item in snapshot["history"]] == list(range(1, 9))
-    assert snapshot["nextIndex"] == 9
+    assert [item["index"] for item in snapshot["history"]] == list(range(1, 10))
+    assert snapshot["nextIndex"] == 10
     assert snapshot["alerts"] == []
     assert snapshot["thresholds"]["diameter"] == 0.1  # thresholds survive a reset
     stamps = [item["timestampUtc"] for item in snapshot["history"]]
     assert stamps == sorted(stamps)
     with closing(sqlite3.connect(service.path)) as db:
         assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
-    assert service.record(MockPrediction())["prediction"]["index"] == 9
+    assert service.record(MockPrediction())["prediction"]["index"] == 10
 
 
 def test_events_persist_across_restart_and_dedupe(tmp_path):
@@ -768,7 +826,7 @@ def test_alert_only_notifies_temi_and_kafka_waits_for_the_operator(tmp_path):
     kafka = rows[1][1]
     assert (kafka["schemaVersion"], kafka["eventType"], kafka["action"]) == ("1.1.0", "tool_wear_alert", "inspection")
     assert (kafka["alertId"], kafka["machineId"], kafka["toolNo"], kafka["metrics"]) == (
-        alert["alertId"], settings.signals_machine_id, "25", ["diameter", "length"])
+        alert["alertId"], settings.signals_machine_id, "25", ["diameter"])
     assert kafka["eventId"] and kafka["eventId"] != kafka["alertId"]
 
     confirm(service, alert)  # confirming twice does not queue a second message
@@ -793,7 +851,7 @@ def test_inspection_result_arrives_with_a_new_wear_value_then_second_run_is_sent
     assert result["status"] == "awaiting_result"  # wear alone must not open the popup
     assert result["result"] == {
         "timestampUtc": "2026-11-19T01:00:04+00:00", "actual": {"diameter": 0.08, "length": 0.03},
-        "predicted": {"diameter": 0.35, "length": 0.18}, "thresholds": {"diameter": 0.1, "length": 0.05},
+        "predicted": {"diameter": 0.1216, "length": 0.0053}, "thresholds": {"diameter": 0.1, "length": 0.05},
         "exceeded": [],  # back within both thresholds
     }
     assert "Inspection result received" in [e["label"] for e in service.snapshot()["events"]]
