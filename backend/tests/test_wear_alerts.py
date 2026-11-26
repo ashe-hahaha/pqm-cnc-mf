@@ -38,20 +38,20 @@ def test_new_wear_series_defaults_reset_and_tenth_prediction_alarm(tmp_path):
                 assert abs(point[key] - point["measured"][key]) < 0.00005
     result = service.record(MockPrediction())
     assert result["prediction"]["index"] == 10 and result["alert"]["metrics"] == ["diameter", "length"]
-    assert result["prediction"]["quality"] == 17.89
+    assert result["prediction"]["quality"] == 17.94
     service.set_thresholds(WearValues(diameter=0.13, length=0.006))
     assert WearAlerts(settings).snapshot()["thresholds"] == {"diameter": 0.13, "length": 0.006}
 
 
 def test_quality_dimension_series_and_one_time_migration(tmp_path):
     settings, service = make_service(tmp_path)
-    expected = [18.012, 18.01, 17.998, 17.993, 17.992, 17.989, 17.9889, 17.9798, 17.9737, 17.89]
+    expected = [18.012, 18.01, 17.998, 17.993, 17.992, 17.989, 17.9889, 17.9798, 17.9737, 17.94]
     assert [point["quality"] for point in service.snapshot()["series"]] == expected
     assert all(service.record(MockPrediction(index=index))["qualityAlert"] is None for index in range(1, 10))
     result = service.record(MockPrediction(index=10))
-    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.9
+    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.95
     fixed = service.snapshot()["fixedQualitySeries"]
-    assert len(fixed) == 10 and all(17.9 <= point["quality"] <= 18.1 for point in fixed)
+    assert len(fixed) == 10 and all(17.95 <= point["quality"] <= 18.05 for point in fixed)
     assert [point["index"] for point in fixed if point["qcValue"] is not None] == [3, 6, 9]
     assert all(abs(point["qcValue"] - point["quality"]) < 0.001 for point in fixed if point["qcValue"] is not None)
     stamp, prediction_id = result["prediction"]["timestampUtc"], result["prediction"]["predictionId"]
@@ -60,7 +60,31 @@ def test_quality_dimension_series_and_one_time_migration(tmp_path):
         old = {**result["prediction"], "quality": 18.15}
         db.execute("UPDATE predictions SET body=? WHERE json_extract(body, '$.index')=10", (json.dumps(old),))
     migrated = WearAlerts(settings).snapshot()["prediction"]
-    assert migrated["quality"] == 17.89 and migrated["timestampUtc"] == stamp and migrated["predictionId"] == prediction_id
+    assert migrated["quality"] == 17.94 and migrated["timestampUtc"] == stamp and migrated["predictionId"] == prediction_id
+
+
+def test_b9_historical_qc_markers_and_new_tolerance_migration(tmp_path):
+    settings, service = make_service(tmp_path)
+    service.reset()
+    snapshot = service.snapshot()
+    assert snapshot["qualitySpec"] == {"nominal": 18, "upperTol": 0.05, "lowerTol": 0.05}
+    assert [point["index"] for point in snapshot["history"] if point["qcValue"] is not None] == [3, 6, 9]
+    result = service.record(MockPrediction())
+    assert result["prediction"]["quality"] == 17.94
+    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.95
+    with closing(sqlite3.connect(service.path)) as db, db:
+        db.execute("DELETE FROM settings_migrations WHERE name='quality-005-markers-20261126'")
+        db.execute("UPDATE quality_spec SET body=?", (json.dumps({"nominal": 18, "upperTol": 0.1, "lowerTol": 0.1}),))
+        for seq, body in db.execute("SELECT seq, body FROM predictions").fetchall():
+            point = json.loads(body)
+            point.pop("qcValue", None)
+            if point["index"] == 10:
+                point["quality"] = 17.89
+            db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(point), seq))
+    migrated = WearAlerts(settings).snapshot()
+    assert migrated["qualitySpec"] == snapshot["qualitySpec"]
+    assert migrated["prediction"]["quality"] == 17.94
+    assert [point["index"] for point in migrated["history"] if point["qcValue"] is not None] == [3, 6, 9]
 
 
 def test_saved_wear_history_is_migrated_once_without_changing_quality_or_timestamps(tmp_path):
@@ -257,10 +281,10 @@ def test_finished_balloon_quality_history_is_all_within_default_tolerance(tmp_pa
     snapshot = service.snapshot()
     fixed = snapshot["fixedQualitySeries"]
     assert [point["index"] for point in fixed] == list(range(1, 11))
-    assert all(17.9 <= point["quality"] <= 18.1 for point in fixed)
+    assert all(17.95 <= point["quality"] <= 18.05 for point in fixed)
     assert fixed[-1]["quality"] == 17.97
     assert [p["index"] for p in fixed if p["qcValue"] is not None] == [3, 6, 9]
-    assert snapshot["series"][-1]["quality"] == 17.89
+    assert snapshot["series"][-1]["quality"] == 17.94
 
 
 def test_predictions_cycle_through_series_and_persist_cursor(tmp_path):
@@ -383,11 +407,11 @@ def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
 
 def test_quality_alert_follows_the_stored_tolerance(tmp_path):
     settings, service = make_service(tmp_path)
-    assert service.snapshot()["qualitySpec"] == {"nominal": 18, "upperTol": 0.1, "lowerTol": 0.1}
+    assert service.snapshot()["qualitySpec"] == {"nominal": 18, "upperTol": 0.05, "lowerTol": 0.05}
     # Default spec 18 ± 0.1 mm: #9 (18.0088) is fine, #10 (18.15) is above USL 18.1.
     assert service.record(MockPrediction(index=9))["qualityAlert"] is None
     alert = service.record(MockPrediction(index=10))["qualityAlert"]
-    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "lower", 17.89, 17.9)
+    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "lower", 17.94, 17.95)
 
     # A wider tolerance makes the same value acceptable again.
     service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.1, lowerTol=0.2))

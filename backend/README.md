@@ -226,3 +226,5 @@ GET /api/tool-wear/history?machine_id=Makino_01&start=2026-11-04T00:00:00Z&end=2
 Tool wear demo 序列使用 wear_series.py 的十组 diameter/length 值，默认阈值分别为 0.121 / 0.005 mm，严格大于才报警。Reset 预置 1–9，下一次预测第 10 组。历史 measured markers 固定附在第 3/6/9 组，inspection actual measurement 为额外一组；两处趋势图共用。一次性 settings_migrations 更新旧 threshold 和已保存 prediction 的 wear 值，保留 quality/ID/时间，之后手动修改的阈值不会被启动覆盖。Tool Wear 日期默认今天（本地一个日历日），仍可手动选择至多七天。
 
 Quality 序列集中在 app/wear_series.py：B9 前九组使用 dimension，第十组为 17.89，默认阈值 17.9–18.1；B1–B8 独立十组均正常，FIXED_QUALITY_MEASUREMENTS 配置第 3/6/9 组 measured 值。quality-dimensions-20261126 一次性迁移已有 quality prediction，保留 ID/时间/关联。已移除 QC 修正配置，旧环境变量不再生效；部署后 Reset 清除旧 session 保存的 QC。
+
+Quality 默认公差更新为 18 ± 0.05（17.95–18.05），第十组 17.94。B9_QUALITY_MEASUREMENTS 配置 B9 第 3/6/9 个历史 measured marker（按 prediction 时间和序号关联），真实 QC 仍独立保存并关联 rework prediction。quality-005-markers-20261126 一次性迁移已有 quality_spec 和历史 markers。

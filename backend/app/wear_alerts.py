@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from app.config import Settings
 from app.signals import sse
 from app.wear_history import tool_key
-from app.wear_series import (DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
+from app.wear_series import (B9_QUALITY_MEASUREMENTS, DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
 logger = logging.getLogger("uvicorn.error")
@@ -190,6 +190,16 @@ class WearAlerts:
                     if isinstance(index, int) and 1 <= index <= len(PREDICTION_SERIES):
                         prediction["quality"] = PREDICTION_SERIES[index - 1][2]
                         db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
+
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('quality-005-markers-20261126')").rowcount:
+                db.execute("UPDATE quality_spec SET body=? WHERE id=1", (default.model_dump_json(),))
+                for seq, body in db.execute("SELECT seq, body FROM predictions").fetchall():
+                    prediction = json.loads(body)
+                    index = prediction.get("index")
+                    prediction["qcValue"] = B9_QUALITY_MEASUREMENTS.get(index)
+                    if index == 10:
+                        prediction["quality"] = PREDICTION_SERIES[9][2]
+                    db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
 
     def snapshot(self):
         with closing(sqlite3.connect(self.path)) as db:
@@ -614,6 +624,7 @@ class WearAlerts:
                               "diameter": diameter, "length": length,
                               "balloonId": QUALITY_BALLOON_ID, "quality": quality, "exceeded": []}
                 prediction["measured"] = HISTORICAL_WEAR_MEASUREMENTS.get(i + 1)
+                prediction["qcValue"] = B9_QUALITY_MEASUREMENTS.get(i + 1)
                 db.execute("INSERT INTO predictions(machine, tool, body) VALUES (?, ?, ?)",
                            (machine, TOOL_NO, json.dumps(prediction)))
             db.execute("UPDATE cursor SET next_index=? WHERE id=1", (RESET_RECORDS % len(PREDICTION_SERIES),))
@@ -637,6 +648,7 @@ class WearAlerts:
                           "balloonId": QUALITY_BALLOON_ID, "quality": quality}
             prediction["run"] = self.cutting["run"]
             prediction["measured"] = HISTORICAL_WEAR_MEASUREMENTS.get(position + 1)
+            prediction["qcValue"] = B9_QUALITY_MEASUREMENTS.get(position + 1)
             if prediction["run"] == 2:
                 qc_row = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
                 if qc_row:

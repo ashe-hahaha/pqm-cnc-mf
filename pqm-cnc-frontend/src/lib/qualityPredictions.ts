@@ -9,7 +9,7 @@ import type {
 export const DEFAULT_QUALITY_BALLOON_ID = "b9";
 
 /** Demo: tolerance every series-driven balloon starts with (each can be changed by hand). Matches the backend default. */
-export const DEFAULT_SERIES_SPEC = { nominal: 18, upperTol: 0.1, lowerTol: 0.1 } as const;
+export const DEFAULT_SERIES_SPEC = { nominal: 18, upperTol: 0.05, lowerTol: 0.05 } as const;
 
 /** Demo phase colour underneath the purple cutting overlay. */
 export function demoBalloonRisk(cutting?: {
@@ -25,7 +25,7 @@ export type QualityHistoryPoint = {
   predictionId?: string;
   index?: number;
   quality?: number;
-  qcValue?: number;
+  qcValue?: number | null;
   timestampUtc: string;
 };
 

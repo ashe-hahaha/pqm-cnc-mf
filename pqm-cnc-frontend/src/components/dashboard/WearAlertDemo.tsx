@@ -5,7 +5,7 @@ import { Panel } from "./Panel";
 import type { WearEvent } from "./WearEventLog";
 
 type Values = { diameter: number; length: number };
-export type WearPrediction = Values & { measured?: Values | null; predictionId?: string; machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
+export type WearPrediction = Values & { qcValue?: number | null; measured?: Values | null; predictionId?: string; machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
 type Prediction = WearPrediction;
 export type ToolWearAlert = {
   kind?: "tool_wear";
