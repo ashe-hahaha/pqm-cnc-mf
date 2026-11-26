@@ -22,6 +22,7 @@ export function demoBalloonRisk(cutting?: {
 
 /** One backend prediction as far as the quality balloon is concerned. */
 export type QualityHistoryPoint = {
+  predictionId?: string;
   index?: number;
   quality?: number;
   qcValue?: number;
@@ -76,6 +77,7 @@ export function qualityRisk(value: number, b: Spec): BalloonRisk {
 export function qualityTrendFromHistory(
   history: readonly QualityHistoryPoint[],
   balloon: Spec,
+  measurement?: { value: number; predictionId?: string | null } | null,
 ): QualityTrendPoint[] {
   const usl = balloon.nominal + balloon.upperTol;
   const lsl = balloon.nominal - balloon.lowerTol;
@@ -86,7 +88,9 @@ export function qualityTrendFromHistory(
           index: point.index ?? i + 1,
           label: String(point.index ?? i + 1),
           prediction: roundFor(point.quality, span),
-          qcValue: typeof point.qcValue === "number" ? roundFor(point.qcValue, span) : null,
+          qcValue: measurement?.predictionId && point.predictionId === measurement.predictionId
+            ? roundFor(measurement.value, span)
+            : typeof point.qcValue === "number" ? roundFor(point.qcValue, span) : null,
           usl: roundFor(usl, span),
           lsl: roundFor(lsl, span),
         }]

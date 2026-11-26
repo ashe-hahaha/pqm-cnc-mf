@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.signals import sse
+from app.wear_history import tool_key
 from app.wear_series import (DEFAULT_QUALITY_SPEC, FIXED_QUALITY_SERIES, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
@@ -30,7 +31,7 @@ EVENTS_KEPT = 1000  # events retained in the database
 NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
 NC_COOLDOWN_S = 10  # minimum time between automatic triggers
 NC_QC_VALUE = "93"  # nc_line value that samples the measured quality (no prediction is started)
-QC_MACRO = "106"  # key of the process row's `macros` object that holds the measured diameter (mm)
+QC_MACRO = "956"  # key of the process row's `macros` object that holds the measured diameter (mm)
 NC_RANGE_LOW, NC_RANGE_HIGH = 73, 74  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 KAFKA_SCHEMA_VERSION = "1.1.0"
@@ -129,7 +130,6 @@ class WearAlerts:
         self.PREDICTION_DELAY_S = settings.tool_wear_prediction_delay_seconds  # simulated prediction time
         self.nc = {"value": None, "seenAt": None, "lastTriggerAt": None}
         self.nc_last_trigger = None  # monotonic time of the last automatic trigger
-        self.nc_fallback: asyncio.Task | None = None  # pending fallback trigger armed by a "start" trigger
         self.prediction_running = False
         self.cutting = {"run": 1, "status": "waiting", "alertId": None}
         self.cutting_task: asyncio.Task | None = None
@@ -150,6 +150,7 @@ class WearAlerts:
                 CREATE INDEX IF NOT EXISTS predictions_tool ON predictions(machine, tool, seq);
                 CREATE TABLE IF NOT EXISTS quality_spec (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS last_qc (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS demo_tool_measurement (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
                 INSERT OR IGNORE INTO cursor VALUES (1, 0);
                 CREATE TABLE IF NOT EXISTS alerts (seq INTEGER PRIMARY KEY, body TEXT NOT NULL);
@@ -180,6 +181,7 @@ class WearAlerts:
             pending = db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]
             spec = db.execute("SELECT body FROM quality_spec WHERE id=1").fetchone()[0]
             last_qc = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
+            tool_measurement = db.execute("SELECT body FROM demo_tool_measurement WHERE id=1").fetchone()
             inspection = db.execute("SELECT body FROM inspections ORDER BY seq DESC LIMIT 1").fetchone()
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
@@ -190,6 +192,7 @@ class WearAlerts:
                                        for i, q in enumerate(FIXED_QUALITY_SERIES)],
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
                 "lastQc": json.loads(last_qc[0]) if last_qc else None,
+                "toolMeasurement": json.loads(tool_measurement[0]) if tool_measurement else None,
                 "ncWatch": self.nc_status(),
                 "cutting": dict(self.cutting),
                 "inspection": json.loads(inspection[0]) if inspection else None,
@@ -254,8 +257,6 @@ class WearAlerts:
         running = seen is not None and time.monotonic() - seen < max(5, 3 * self.settings.signals_poll_seconds)
         return {"field": NC_LINE_FIELD, "triggerValues": nc_trigger_values(self.settings),
                 "rangeValues": [NC_RANGE_LOW, NC_RANGE_HIGH],
-                "fallbackSeconds": self.settings.tool_wear_nc_fallback_seconds,
-                "fallbackPending": self.nc_fallback is not None,
                 "running": running, "value": self.nc["value"], "lastTriggerAt": self.nc["lastTriggerAt"]}
 
     def on_signals(self, machine, batch, state):
@@ -325,7 +326,9 @@ class WearAlerts:
             db.execute("BEGIN IMMEDIATE")
             for seq, body in db.execute("SELECT seq, body FROM inspections").fetchall():
                 inspection = json.loads(body)
-                if inspection["status"] != "awaiting_result" or normalize_nc(inspection["toolNo"]) != tool:
+                if (inspection["status"] == "superseded"
+                        or inspection["status"] == "dismissed" and not inspection.get("image")
+                        or inspection.get("result") is not None or normalize_nc(inspection["toolNo"]) != tool):
                     continue
                 baseline = inspection["baseline"]
                 if all(baseline[metric] is not None and abs(value - baseline[metric]) <= WEAR_EPSILON
@@ -333,13 +336,15 @@ class WearAlerts:
                     continue  # still the value from before the inspection
                 actual = {"diameter": diameter, "length": length}
                 thresholds = inspection["thresholds"]
-                inspection["status"] = "result_ready"
                 inspection["result"] = {
                     "timestampUtc": stamp, "actual": actual, "predicted": inspection["predicted"],
                     "thresholds": thresholds,
                     "exceeded": [metric for metric in METRICS if actual[metric] > thresholds[metric]],
                 }
                 db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
+                measurement = {"toolNo": inspection["toolNo"], "machineId": inspection["machineId"],
+                               "timestampUtc": stamp, **actual}
+                db.execute("INSERT OR IGNORE INTO demo_tool_measurement VALUES (1, ?)", (json.dumps(measurement),))
                 completed.append(inspection)
         for inspection in completed:
             self.log_event("Inspection result received", inspection["toolNo"], timestamp=inspection["result"]["timestampUtc"],
@@ -388,11 +393,11 @@ class WearAlerts:
                           "status": "awaiting_result", "confirmedAt": now, "metrics": alert["metrics"],
                           "baseline": {"diameter": diameter, "length": length},
                           "predicted": {metric: alert["prediction"][metric] for metric in METRICS},
-                          "thresholds": alert["thresholds"], "result": None}
+                          "thresholds": alert["thresholds"], "result": None, "image": None}
             db.execute("INSERT INTO inspections(alert_id, body) VALUES (?, ?)", (alert_id, json.dumps(inspection)))
             event = self.kafka_event(ACTION_INSPECTION, alert_id, alert["machineId"], tool, now, metrics=alert["metrics"])
             queued = self.queue_kafka(db, event)
-        self.log_event("Laser inspection confirmed", tool, detail="Waiting for new wear values",
+        self.log_event("Laser inspection confirmed", tool, detail="Waiting for inspection image and wear values",
                        event_id=f"{alert_id}:inspection")
         if queued:
             self.log_event("Notification queued", tool, detail=f"{self.destination_label('kafka')} · {ACTION_INSPECTION}",
@@ -410,7 +415,7 @@ class WearAlerts:
             if inspection["status"] == "second_run_requested":
                 return inspection
             if inspection["status"] != "result_ready":
-                raise HTTPException(409, "No inspection result to act on")
+                raise HTTPException(409, "No inspection image to act on")
             inspection["status"] = "second_run_requested"
             db.execute("UPDATE inspections SET body=? WHERE alert_id=?", (json.dumps(inspection), alert_id))
             event = self.kafka_event(ACTION_SECOND_RUN, alert_id, inspection["machineId"], inspection["toolNo"], now)
@@ -439,7 +444,7 @@ class WearAlerts:
             inspection = self.get_inspection(db, alert_id)
         if inspection is None:
             raise HTTPException(404, "Unknown inspection")
-        if inspection["status"] != "awaiting_result":
+        if inspection["status"] == "superseded" or inspection.get("result") is not None:
             raise HTTPException(409, "Inspection is not waiting for wear values")
         tool = normalize_nc(inspection["toolNo"])
         self.on_wear(tool, values.diameter, values.length, datetime.now(timezone.utc).isoformat())
@@ -457,6 +462,9 @@ class WearAlerts:
             self.log_event("QC not available", TOOL_NO, detail=f"NC line {NC_QC_VALUE} · macro {QC_MACRO} missing or invalid")
             return
         with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM last_qc WHERE id=1").fetchone():
+                return  # one quality measurement per demo; Reset clears it
             spec = self.get_quality_spec(db)
             lsl, usl = spec.nominal - spec.lowerTol, spec.nominal + spec.upperTol
             in_spec = lsl - 1e-9 <= value <= usl + 1e-9
@@ -465,6 +473,8 @@ class WearAlerts:
             shown = self.settings.tool_wear_qc_pass_value if masked else value
             qc = {"value": shown, "timestampUtc": row["timestamp"], "machineId": self.settings.signals_machine_id,
                   "toolNo": row.get("tool_no"), "macro": QC_MACRO}
+            prediction = db.execute("SELECT body FROM predictions WHERE json_extract(body, '$.run')=2 ORDER BY seq DESC LIMIT 1").fetchone()
+            qc["predictionId"] = json.loads(prediction[0])["predictionId"] if prediction else None
             db.execute("INSERT OR REPLACE INTO last_qc VALUES (1, ?)", (json.dumps(qc),))
         detail = f"Diameter {round(value, 6)} mm · macro {QC_MACRO}"
         if masked:  # the real value stays visible here (event log / server log), not on the dashboard
@@ -475,11 +485,7 @@ class WearAlerts:
         self.notify_listeners()
 
     def start_auto_prediction(self, previous, current, kind="start"):
-        """Start one automatic prediction. kind: "start" (trigger value), "range" (entered 73-74) or "fallback".
-
-        All kinds share the prediction-running guard and the cooldown. A "start" trigger arms the fallback timer,
-        a "range" trigger cancels it.
-        """
+        """NC-triggered prediction only; no timer-based fallback."""
         now = time.monotonic()
         first_run_end = kind == "start" and current in ("22", "29")
         if first_run_end and (self.first_run_prediction_started or self.cutting["run"] != 1):
@@ -496,38 +502,11 @@ class WearAlerts:
         if first_run_end:
             self.first_run_prediction_started = True
         self.nc["lastTriggerAt"] = datetime.now(timezone.utc).isoformat()
-        if kind == "fallback":
-            detail = (f"NC line fallback · no {NC_RANGE_LOW}-{NC_RANGE_HIGH} within "
-                      f"{self.settings.tool_wear_nc_fallback_seconds:g} s after {previous}")
-            logger.info("NC line fallback after %s: starting prediction", previous)
-        else:
-            detail = f"NC line {previous if previous is not None else 'null'} → {current}"
-            logger.info("NC line %s -> %s (%s): starting prediction", previous, current, kind)
-            if kind == "start":
-                self.arm_fallback(current)
-            else:
-                self.cancel_fallback()
+        detail = f"NC line {previous if previous is not None else 'null'} → {current}"
+        logger.info("NC line %s -> %s (%s): starting prediction", previous, current, kind)
         task = asyncio.create_task(self.run_prediction(MockPrediction(), detail=detail))
         self.background.add(task)
         task.add_done_callback(self.background.discard)
-
-    def arm_fallback(self, value):
-        """After a "start" trigger: if no 73-74 trigger follows within the configured time, trigger once more."""
-        self.cancel_fallback()
-        seconds = self.settings.tool_wear_nc_fallback_seconds
-        if seconds > 0:
-            self.nc_fallback = asyncio.create_task(self.fallback_after(seconds, value))
-
-    def cancel_fallback(self):
-        task, self.nc_fallback = self.nc_fallback, None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-
-    async def fallback_after(self, seconds, value):
-        await asyncio.sleep(seconds)
-        self.nc_fallback = None
-        self.start_auto_prediction(value, None, "fallback")
-        self.notify_listeners()
 
     async def run_prediction(self, values: MockPrediction, detail="Mock prediction"):
         """Manual and automatic triggers share this flow: events, prediction, alerts and notifications."""
@@ -582,7 +561,7 @@ class WearAlerts:
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections"):
+            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections", "demo_tool_measurement"):
                 db.execute(f"DELETE FROM {table}")
             for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
                 stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()
@@ -611,6 +590,14 @@ class WearAlerts:
                           "timestampUtc": now, "source": "mock", "index": position + 1,
                           "diameter": diameter, "length": length,
                           "balloonId": QUALITY_BALLOON_ID, "quality": quality}
+            prediction["run"] = self.cutting["run"]
+            if prediction["run"] == 2:
+                qc_row = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
+                if qc_row:
+                    qc = json.loads(qc_row[0])
+                    if not qc.get("predictionId"):
+                        qc["predictionId"] = prediction["predictionId"]
+                        db.execute("UPDATE last_qc SET body=? WHERE id=1", (json.dumps(qc),))
             thresholds = json.loads(db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0])
             # Every metric above its threshold alerts, even if the previous prediction was also above.
             triggered = [metric for metric in METRICS if prediction[metric] > thresholds[metric]]
@@ -795,9 +782,24 @@ class WearAlerts:
     def log_photo(self, image):
         self.log_event("Photo received", image["toolNo"], timestamp=image["receivedAt"],
                        detail=image["machineId"], event_id=f'{image["captureId"]}:photo')
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            # A capture can complete only the newest waiting inspection for its machine/tool.
+            for seq, body in db.execute("SELECT seq, body FROM inspections ORDER BY seq DESC").fetchall():
+                inspection = json.loads(body)
+                if (inspection["status"] != "awaiting_result" or inspection.get("image") is not None
+                        or image["machineId"] != inspection["machineId"]
+                        or tool_key(image["toolNo"]) != tool_key(inspection["toolNo"])):
+                    continue
+                if datetime.fromisoformat(image["receivedAt"].replace("Z", "+00:00")) <= datetime.fromisoformat(inspection["confirmedAt"]):
+                    continue
+                inspection["image"] = {"captureId": image["captureId"], "receivedAt": image["receivedAt"]}
+                inspection["status"] = "result_ready"
+                db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
+                break
+        self.notify_listeners()
 
     async def close(self):
-        self.cancel_fallback()
         cutting_task = self.cutting_task
         self.cancel_cutting_timer()
         if cutting_task is not None:
@@ -875,7 +877,6 @@ async def reset(request: Request):
     service = enabled_service(request)
     service.cancel_cutting_timer()
     await asyncio.to_thread(service.reset)
-    service.cancel_fallback()  # a pending fallback must not fire into the freshly reset demo
     service.notify_listeners("reset")
     service.notify_listeners()
     return service.snapshot()

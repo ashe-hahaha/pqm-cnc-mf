@@ -62,9 +62,13 @@ backend 启动时立即为 `SIGNALS_MACHINE_ID` 建立持续监听，采集最�
 - 每 15 秒无事件时发 SSE heartbeat；上游异常保留上次图表并持续重试。相同数据不重复推送。
 - 同一进程内同一机床共用采集任务。配置机床持续采集，页面关闭、隐藏、刷新均不停止；额外机床按需采集，最后一个订阅断开后取消。demo 使用单 worker；多 worker 不共享采集任务，会重复监听和触发。
 
-### 浏览器 WebSocket（dashboard 使用）
+### Demo inspection / rework measurements
 
-B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，22 或 29 任意一个结束并触发一次 prediction（默认 `TOOL_WEAR_NC_TRIGGER_VALUES=22,29`；同一次 run 不重复触发）。首次窗口按顺序恢复 cutting 状态，但不回放历史 prediction。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，包括 73–74 或 fallback 触发；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。
+确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["956"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。原 QC 超限显示替换配置仍适用。
+
+B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，22 或 29 任意一个结束并触发一次 prediction（默认 `TOOL_WEAR_NC_TRIGGER_VALUES=22,29`；同一次 run 不重复触发）。首次窗口按顺序恢复 cutting 状态，但不回放历史 prediction。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，由 NC 73–74 触发（已移除 120 秒保底）；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。
+
+### 浏览器 WebSocket（dashboard 使用）
 
 `WS /api/signals/ws?machine_id=Makino_01` 向浏览器推送实时信号。frontend 经 Next 代理 `/backend` 连接，全页共用一个连接。
 
@@ -214,3 +218,5 @@ GET /api/tool-wear/history?machine_id=Makino_01&start=2026-11-04T00:00:00Z&end=2
 - 返回 data 点含 timestamp、timestampEpoch（毫秒）、toolNo（可为 null）、xWearMm、zWearMm、xSegment、zSegment，外层含 start/end、machine_id、environment、unit、totalPoints、downsampled、truncated=false。
 
 `TOOL_WEAR_HISTORY_SOURCE=database` 可切回原 SQL adapter，此时仍需 tool_no、start、end 和 TOOL_WEAR_DB_* 配置；不自动在 HTTP 故障时切源。HTTP 方式不需要数据库账号。修改 backend 配置后重启，frontend 仍只访问自己的 backend。
+
+第二个 inspection popup 由确认后新收到的 Kafka 图片触发，按 machine/tool 匹配并检查 receivedAt 晚于 confirmedAt；已有图片、重复图片不重开。图片先到时 actual wear 显示等待，wear 随后更新；wear 先到先保存并画 measured markers，等待图片再弹。Rework 可在图片到达后确认，wear 即使稍后到也继续保存，本次 demo 仍只记录一组。

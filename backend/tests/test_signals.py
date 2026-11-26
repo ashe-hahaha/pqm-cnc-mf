@@ -82,7 +82,7 @@ def test_continuous_monitor_triggers_without_browser_and_preserves_baseline_on_r
         async with serve(handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path), tool_wear_demo_enabled=True,
-                                tool_wear_nc_fallback_seconds=0, signals_ws_url=f"ws://127.0.0.1:{port}/ws")
+                                signals_ws_url=f"ws://127.0.0.1:{port}/ws")
             alerts = WearAlerts(settings)
 
             async def predict(values, detail):

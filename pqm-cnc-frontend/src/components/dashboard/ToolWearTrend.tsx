@@ -10,6 +10,7 @@ const TOOL_LABEL = "T25";
 export function ToolWearTrend({ snapshot = null }: { snapshot?: WearAlertSnapshot | null }) {
   const history = snapshot?.history ?? [];
   const thresholds = snapshot?.thresholds;
+  const measurement = snapshot?.toolMeasurement;
   const latest = history.at(-1);
   const latestExceeded = latest && thresholds
     ? latest.diameter > thresholds.diameter || latest.length > thresholds.length
@@ -23,7 +24,8 @@ export function ToolWearTrend({ snapshot = null }: { snapshot?: WearAlertSnapsho
           {latestExceeded ? "High wear" : "Within limit"}
         </span>
       ) : null}>
-      <WearPredictionChart points={history} thresholds={thresholds}
+      <WearPredictionChart points={history} thresholds={thresholds} xMode="time"
+        measured={measurement ? [{ t: Date.parse(measurement.timestampUtc), diameter: measurement.diameter, length: measurement.length }] : []}
         emptyMessage="No prediction yet — trigger one from the flask icon in the top bar." />
     </TrendPanel>
   );

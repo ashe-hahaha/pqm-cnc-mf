@@ -95,10 +95,12 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
     const t = Date.parse(point.timestampUtc);
     return toolKey(point.toolNo) === selectedTool && t >= rangeStart && t < rangeEnd;
   });
-  // Measured values come from the controller's real wear history (X wear = diameter, Z wear = length).
-  const measured: MeasuredWear[] = (history.data?.data ?? []).flatMap(point =>
-    point.xWearMm === null && point.zWearMm === null ? []
-      : [{ t: point.timestampEpoch, diameter: point.xWearMm, length: point.zWearMm }]);
+  // Exactly one inspection measurement per demo, independently of controller history polling.
+  const measurement = wearDemo?.toolMeasurement;
+  const measurementTime = measurement ? Date.parse(measurement.timestampUtc) : NaN;
+  const measured: MeasuredWear[] = measurement && toolKey(measurement.toolNo) === selectedTool
+    && measurementTime >= rangeStart && measurementTime < rangeEnd
+    ? [{ t: measurementTime, diameter: measurement.diameter, length: measurement.length }] : [];
   const historyData = history.data;
   const tools = [...new Set([DEFAULT_TOOL, ...Object.keys(latestByTool), ...history.discoveredTools])];
   useEffect(() => {
@@ -273,7 +275,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
                 <WearPredictionChart points={predictions} thresholds={wearDemo?.thresholds} measured={measured} xMode="time"
                   emptyMessage="No prediction or measured value in this range." />
                 <p className="shrink-0 text-[10px] text-[#70889c]">
-                  {predictions.length} predicted · {measured.length} measured{historyData?.downsampled ? " (downsampled, extrema preserved)" : ""} · measured values from controller compensation
+                  {predictions.length} predicted · {measured.length} measured · inspection result
                   {historyData?.end ? ` · Through ${new Date(historyData.end).toLocaleString()}` : ""}
                 </p>
               </Panel>

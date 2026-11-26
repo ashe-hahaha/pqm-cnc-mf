@@ -5,7 +5,7 @@ The backend publishes a notification when the operator reacts to a tool wear pre
 | `action` | When it is sent | What the NUC should do |
 | --- | --- | --- |
 | `inspection` | The operator answered **Yes, laser inspection** in the "Tool wear prediction alert" popup | Start the laser inspection (and the capture, as before) |
-| `second_run` | The operator answered **Yes, second run** in the "Laser inspection result" popup, after the new wear values arrived | Start the second run |
+| `second_run` | The operator answered **Yes, rework** in the "Laser inspection result" popup, after the new wear values arrived | Start the second run |
 
 The alert itself no longer produces a Kafka message. Temi is unchanged: it is still triggered right after the alert, once per alert, and never for a second run.
 
@@ -83,7 +83,7 @@ Use these demo controls on an access-controlled deployment. The threshold and mo
 1. Start the NUC consumer. In Tool Wear, set the thresholds (for example `0.1` mm for diameter).
 2. Trigger mock predictions until the abnormal one (#10) raises the "Tool wear prediction alert" popup. Nothing is published to Kafka yet.
 3. Click **Yes, laser inspection**. The NUC receives the `inspection` message. In the Mock tool wear prediction panel, enter new Diameter and Tool length wear values and click **Simulate new wear** (a real controller row with new `xWearMm` / `zWearMm` values does the same).
-4. The "Laser inspection result" popup shows the measured wear against the prediction and the threshold. Click **Yes, second run**. The NUC receives the `second_run` message.
+4. The "Laser inspection result" popup shows the measured wear against the prediction. Click **Yes, rework**. The NUC receives the `second_run` message.
 5. Compare `eventId` from the NUC message with the backend logs. The log `Tool wear notification published to Kafka` includes the action, the acknowledged topic, partition and offset. A resulting capture produces `Microscope image received from Kafka`.
 
 ```sh
@@ -97,7 +97,7 @@ Thresholds, prediction state, alert history and pending deliveries are stored in
 1. An alert fires: the "Tool wear prediction alert" popup asks "Do you want to perform a laser inspection?". Temi is triggered (unchanged).
 2. **Yes, laser inspection** (`POST /api/tool-wear/demo/alerts/{alertId}/inspection`): the backend stores the tool's current actual wear as the baseline, starts waiting, and queues the Kafka `inspection` message. **Not now** closes the popup and does nothing else. A newer confirmation for the same tool replaces an inspection that is still open.
 3. While waiting, every controller row of that tool is checked. When a row carries both `xWearMm` (diameter) and `zWearMm` (tool length) and at least one differs from the baseline by more than 1e-6 mm (or no baseline existed), the inspection result is stored once: the actual values, the predicted values and thresholds of the alert, and which metrics are still above their threshold.
-4. The "Laser inspection result" popup appears (also after a page reload while the result is waiting). **Yes, second run** (`POST /api/tool-wear/demo/inspections/{alertId}/second-run`) queues the Kafka `second_run` message once; repeated clicks send nothing more. **Not now** (`.../dismiss`) closes the inspection; a dismissed inspection cannot be reopened, only a new alert starts another.
+4. The "Laser inspection result" popup appears (also after a page reload while the result is waiting). **Yes, rework** (`POST /api/tool-wear/demo/inspections/{alertId}/second-run`) queues the Kafka `second_run` message once; repeated clicks send nothing more. **Not now** (`.../dismiss`) closes the inspection; a dismissed inspection cannot be reopened, only a new alert starts another.
 5. The state is in the `inspections` table of `wear-alerts.sqlite3` and in the `inspection` field of `GET /api/tool-wear/demo`. Reset demo clears it. The event log shows Laser inspection confirmed, Inspection result received and Second run requested.
 6. Demo helper: `POST /api/tool-wear/demo/inspections/{alertId}/simulate-wear` with `{"diameter": 0.06, "length": 0.04}` behaves like a controller row.
 
@@ -111,12 +111,12 @@ To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_AL
 
 - **触发值**：值从别的值（含 null）变为触发值，默认 `29`（逗号分隔，可写多个），用 `TOOL_WEAR_NC_TRIGGER_VALUES` 修改。
 - **区间触发**：值首次进入 73–74（含两端，常量 `NC_RANGE_LOW` / `NC_RANGE_HIGH`）时触发；已在区间内变化（73 → 74）不重复触发，离开区间再进入才再次触发。
-- **保底触发**：触发值（29）触发后开始计时，`TOOL_WEAR_NC_FALLBACK_SECONDS` 秒（默认 120，`0` 关闭）内如果没有因进入 73–74 而触发，就自动再触发一次（事件详情显示 `NC line fallback · ...`）；区间触发会取消保底，29 再次触发会重新计时，重置 demo 和服务关闭时也会取消。
+- **第二次 prediction**：仅由进入 NC 73–74 触发，已移除定时保底。
 - 通知过期：待发送的告警通知超过 `TOOL_WEAR_ALERT_EXPIRE_SECONDS`（默认 600 秒，`0` 表示不过期）仍未发出，就直接丢弃，并在 event log 记一条 `Notification expired`（一次清理合并成一条，写明丢弃的数量）。这样 Temi 或 Kafka 停机一段时间后恢复，不会把积压的旧告警一次性补发。失败重试仍是 2、4、8…最多 60 秒的指数退避，过期前一直重试。
 - 预测的模拟耗时（`Prediction started` 到 `Prediction completed` 之间）由 `TOOL_WEAR_PREDICTION_DELAY_SECONDS` 设置，默认 `0`（立即出结果），手动和自动触发共用。
 - 字段名固定为 `nc_line`（`app/wear_alerts.py` 的 `NC_LINE_FIELD`）。
-- **QC 采样（93）**：`nc_line` 变为 `93` 时不启动预测，只读取同一行 `macros["106"]`（实测直径，mm；`macros` 为字符串宏号 → 浮点数的对象，没有时是 `{}`），保存为 B1 的 Last QC（常量 `NC_QC_VALUE` / `QC_MACRO`）。值缺失或不是有限数字时 Last QC 保持不变，并在 event log 记一条 `QC not available`。值写入 `wear-alerts.sqlite3` 的 `last_qc` 表，重启后保留，Reset demo 会清除；通过 `GET /api/tool-wear/demo` 的 `lastQc` 字段返回，前端显示在 Selected Balloon Detail 的 Last QC（仅 B1）。**演示设置**：实测直径超出 B1 公差（后端 `quality_spec`，默认 18 ± 0.1）时，Last QC 不显示真实值，而显示固定的合格值 `TOOL_WEAR_QC_PASS_VALUE`（默认 18.067）；真实值只记录在 event log 和后端日志里。`TOOL_WEAR_QC_MASK_OUT_OF_SPEC=false` 可关闭这个替换。
-- 页面刚打开后的第一批数据只记录当前值，不触发；自动触发之间至少间隔 10 秒（触发值、区间、保底三种触发共用同一个冷却，保底触发后也进入冷却）；预测进行中不重复触发，被冷却挡掉的触发直接丢弃、不补发。
+- **QC 采样（93）**：`nc_line` 变为 `93` 时不启动预测，只读取同一行 `macros["956"]`（实测直径，mm；`macros` 为字符串宏号 → 浮点数的对象，没有时是 `{}`），保存为 B9 的 Last QC（常量 `NC_QC_VALUE` / `QC_MACRO`）。值缺失或不是有限数字时 Last QC 保持不变，并在 event log 记一条 `QC not available`。值写入 `wear-alerts.sqlite3` 的 `last_qc` 表，重启后保留，Reset demo 会清除；通过 `GET /api/tool-wear/demo` 的 `lastQc` 字段返回，前端显示在 Selected Balloon Detail 的 Last QC（仅 B9）。**演示设置**：实测直径超出 B9 公差（后端 `quality_spec`，默认 18 ± 0.1）时，Last QC 不显示真实值，而显示固定的合格值 `TOOL_WEAR_QC_PASS_VALUE`（默认 18.067）；真实值只记录在 event log 和后端日志里。`TOOL_WEAR_QC_MASK_OUT_OF_SPEC=false` 可关闭这个替换。
+- 页面刚打开后的第一批数据只记录当前值，不触发；自动触发之间至少间隔 10 秒（触发值和区间触发共用同一个冷却）；预测进行中不重复触发，被冷却挡掉的触发直接丢弃、不补发。
 - 只按 `timestamp` 比上次更新的行判断，重叠窗口和数据库停写时重复返回的旧行不会重复触发。
 - 实时质量气球（B9，见 `wear_series.py`）的公差保存在后端 `wear-alerts.sqlite3` 的 `quality_spec` 表（默认 18 / +0.1 / -0.1），手动和自动触发都用它判断 quality 告警。
 - 状态（是否在监测、最近的 `nc_line`、最近一次自动触发时间）在 `GET /api/tool-wear/demo` 的 `ncWatch` 字段和页面触发面板中显示。

@@ -24,6 +24,12 @@ it("colours B9 by demo run phase, keeping red through inspection and the second-
 });
 
 describe("quality predictions from backend history", () => {
+  it("attaches one QC marker by prediction id even when sequence indexes repeat", () => {
+    const history = [{ ...at(18.01, 1), predictionId: "old" }, { ...at(18.02, 1), predictionId: "rework" }];
+    const spec = { unit: "mm", ...DEFAULT_SERIES_SPEC };
+    expect(qualityTrendFromHistory(history, spec, { value: 18.067, predictionId: "rework" }).map(p => p.qcValue)).toEqual([null, 18.067]);
+    expect(qualityTrendFromHistory(history, spec, { value: 18.067, predictionId: null }).map(p => p.qcValue)).toEqual([null, null]);
+  });
   it("maps history to trend points with the balloon's USL/LSL", () => {
     const trend = qualityTrendFromHistory([at(0.005, 1), at(0.027, 10)], b1);
     expect(trend.map((p) => p.prediction)).toEqual([0.005, 0.027]);

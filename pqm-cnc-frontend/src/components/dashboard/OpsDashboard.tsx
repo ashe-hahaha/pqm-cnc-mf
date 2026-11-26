@@ -148,10 +148,15 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   const dismissWearAlerts = useCallback(() => setPendingWearAlerts([]), []);
   // "Yes, laser inspection": the backend notifies Kafka and waits for the controller's new wear values.
   const confirmWearAlerts = useCallback((alert: ToolWearAlert) => {
-    setPendingWearAlerts([]);
-    void confirmInspection(alert.alertId);
+    void confirmInspection(alert.alertId).then(result => {
+      if (!result) return;
+      setPendingWearAlerts([]);
+      setMonitor("tool-wear");
+    });
   }, []);
-  const secondRun = useCallback((alertId: string) => { void requestSecondRun(alertId); }, []);
+  const secondRun = useCallback((alertId: string) => {
+    void requestSecondRun(alertId).then(result => { if (result) setMonitor("quality"); });
+  }, []);
   const dismissInspectionResult = useCallback((alertId: string) => { void dismissInspection(alertId); }, []);
   // Start on the live quality balloon (B9): its trend is visible right away.
   const initialInspectId =
@@ -342,9 +347,10 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   const isFixedSeriesBalloon = !isQualityBalloon && hasFixedSeries && inspectBalloon?.source === "manual";
   const qualityTrend = useMemo(
     () => (inspectBalloon && (isQualityBalloon || isFixedSeriesBalloon)
-      ? qualityTrendFromHistory(isQualityBalloon ? qualityHistory ?? [] : fixedSeries, inspectBalloon)
+      ? qualityTrendFromHistory(isQualityBalloon ? qualityHistory ?? [] : fixedSeries, inspectBalloon,
+          isQualityBalloon ? wearDemo?.lastQc : undefined)
       : []),
-    [isQualityBalloon, isFixedSeriesBalloon, inspectBalloon, qualityHistory, fixedSeries],
+    [isQualityBalloon, isFixedSeriesBalloon, inspectBalloon, qualityHistory, fixedSeries, wearDemo?.lastQc],
   );
   const detailPrediction = useMemo(
     () => (isQualityBalloon && inspectBalloon

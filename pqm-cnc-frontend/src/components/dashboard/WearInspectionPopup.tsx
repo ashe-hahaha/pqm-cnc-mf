@@ -10,7 +10,7 @@ const METRICS = [
 ] as const;
 
 /**
- * Second popup: the controller reported new wear values after the laser inspection. Shows the measured wear against the
+ * Second popup: a new inspection image arrived. Shows available measured wear against the
  * prediction, then asks whether to do a second run.
  */
 export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
@@ -19,18 +19,19 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
   onDismiss: (alertId: string) => void;
 }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
-  const result = inspection?.status === "result_ready" ? inspection.result : null;
+  const ready = inspection?.status === "result_ready" && inspection.image != null;
+  const result = inspection?.result;
   const alertId = inspection?.alertId;
 
   useEffect(() => {
-    if (!alertId || !result) return;
+    if (!alertId || !ready) return;
     confirmRef.current?.focus();
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onDismiss(alertId); };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [alertId, result, onDismiss]);
+  }, [alertId, ready, onDismiss]);
 
-  if (!inspection || !result) return null;
+  if (!inspection || !ready) return null;
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/65 p-4">
       <div role="alertdialog" aria-modal="true" aria-labelledby="wear-inspection-title" aria-describedby="wear-inspection-body"
@@ -38,7 +39,7 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
         <div className="min-w-0">
           <h2 id="wear-inspection-title" className="text-sm font-semibold text-foreground">Laser inspection result</h2>
           <p className="text-[11px] text-[#8fa3b5]">
-            {toolLabel(toolKey(inspection.toolNo))} · {new Date(result.timestampUtc).toLocaleString()}
+            {toolLabel(toolKey(inspection.toolNo))} · {new Date(inspection.image!.receivedAt).toLocaleString()}
           </p>
         </div>
         <ul id="wear-inspection-body" className="mt-3 space-y-1.5 text-xs">
@@ -47,16 +48,17 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
               <li key={key} className="rounded border border-[#2a3a4a] bg-[#0e1620] px-2.5 py-1.5">
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-[#c6d7e4]">{label}</span>
-                  <span className="tabular-nums text-[#e6f1fa]">{result.actual[key].toFixed(5)} mm</span>
+                  <span className="tabular-nums text-[#e6f1fa]">{result ? `${result.actual[key].toFixed(5)} mm` : "—"}</span>
                 </div>
                 <div className="mt-0.5 flex items-baseline justify-between gap-3 text-[11px] text-[#8fa3b5]">
-                  <span>Predicted {result.predicted[key].toFixed(5)} mm</span>
+                  {result && <span>Predicted {result.predicted[key].toFixed(5)} mm</span>}
                 </div>
               </li>
             );
           })}
         </ul>
-        <p className="mt-3 text-xs text-[#c6d7e4]">Do you want to perform a second run?</p>
+        {!result && <p className="mt-2 text-xs text-[#8fa3b5]">Waiting for measurement…</p>}
+        <p className="mt-3 text-xs text-[#c6d7e4]">Do you want to perform rework?</p>
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" onClick={() => onDismiss(inspection.alertId)}
             className="rounded border border-[#314254] px-3 py-1.5 text-xs text-[#8fa3b5] hover:text-[#c1d6e6] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
@@ -64,7 +66,7 @@ export function WearInspectionPopup({ inspection, onSecondRun, onDismiss }: {
           </button>
           <button ref={confirmRef} type="button" onClick={() => onSecondRun(inspection.alertId)}
             className="rounded border border-[#3d8fd1]/60 bg-[#23425b] px-3 py-1.5 text-xs font-semibold text-[#a5d8fa] hover:bg-[#2b5272] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400">
-            Yes, second run
+            Yes, rework
           </button>
         </div>
       </div>

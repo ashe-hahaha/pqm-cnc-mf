@@ -4,6 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ToolWearDashboard } from "./ToolWearDashboard";
 import type { ControllerRow } from "@/lib/useControllerData";
+import type { WearAlertSnapshot } from "./WearAlertDemo";
+
+const demoSnapshot = (): WearAlertSnapshot => ({
+  enabled: true, thresholds: { diameter: 0.1, length: 0.1 }, prediction: null, alerts: [],
+  history: [{ machineId: "Makino_01", toolNo: "25", timestampUtc: new Date().toISOString(), diameter: 0.05, length: 0.02 }],
+});
 
 const controllerSamples = vi.hoisted(() => ({ callback: undefined as
   ((rows: ControllerRow[], receivedAt: string, machine: string) => void) | undefined }));
@@ -60,7 +66,7 @@ beforeEach(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   host = document.createElement("div"); document.body.append(host);
   root = createRoot(host);
-  await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
+  await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06", wearDemo: demoSnapshot() })));
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); });
 
@@ -93,8 +99,7 @@ it("shows both health outputs and separate trend charts without offset or feedba
   expect(host.querySelector('[aria-label="Tool length wear health"]')?.textContent).toContain("0.190");
   expect(host.textContent).toContain("Offset 2.340 mm");
   expect(host.textContent).toContain("Offset 10.190 mm");
-  expect(host.querySelector('svg[aria-label="Tool wear history"]')).not.toBeNull();
-  expect(host.querySelectorAll('svg[aria-label="Tool wear history"] circle')).toHaveLength(4);
+  expect(host.querySelector('svg[aria-label^="Predicted wear history"]')).not.toBeNull();
   const cards = [...host.querySelectorAll('[aria-label="Tool selection"] button')];
   expect(cards.map(card => card.getAttribute("aria-label"))).toEqual(["T25", "T167", "Unknown tool"]);
   expect(cards[0].getAttribute("aria-pressed")).toBe("true");
@@ -105,7 +110,7 @@ it("shows both health outputs and separate trend charts without offset or feedba
   expect(host.querySelectorAll("[data-tool-block]")).toHaveLength(5);
   const historyBlock = host.querySelector('[data-tool-block="wear-history"]');
   expect(historyBlock?.querySelectorAll('input[type="date"]')).toHaveLength(2);
-  expect(historyBlock?.querySelectorAll('svg[aria-label="Tool wear history"]')).toHaveLength(1);
+  expect(historyBlock?.querySelectorAll('svg[aria-label^="Predicted wear history"]')).toHaveLength(1);
   expect(host.textContent).not.toContain("Apply offset");
   expect(host.textContent).not.toContain("Machine feedback");
   expect(host.querySelector("#wear-dimension")).toBeNull();
@@ -115,7 +120,7 @@ it("shows both health outputs and separate trend charts without offset or feedba
 
 it("keeps the last successful charts on a history error without announcing it", async () => {
   historyState.error = "History request failed (502)";
-  await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06" })));
+  await act(async () => root.render(React.createElement(ToolWearDashboard, { currentTool: "T06", wearDemo: demoSnapshot() })));
   expect(host.textContent).not.toContain("History request failed");
   expect(host.querySelector('svg[aria-label^="Predicted wear history"]')).not.toBeNull();
   historyState.error = null;
@@ -141,11 +146,15 @@ it("toggles one wear series without hiding the other", async () => {
   expect(chart.querySelector('g[aria-label="Diameter wear"]')).not.toBeNull();
 });
 
-it("shows the controller's measured values as markers on the predicted wear history", () => {
-  const chart = host.querySelector('svg[aria-label^="Predicted wear history"]')!;
-  expect(chart.getAttribute("aria-label")).toContain("2 measured");
-  // Two history records, each with a diameter (X) and a length (Z) value.
-  expect([...chart.querySelectorAll("title")].filter(title => title.textContent?.startsWith("Measured "))).toHaveLength(4);
+it("shows only the demo inspection result as one measurement with two axis markers", async () => {
+  const chart = () => host.querySelector('svg[aria-label^="Predicted wear history"]')!;
+  expect(chart().getAttribute("aria-label")).toContain("0 measured");
+  await act(async () => root.render(React.createElement(ToolWearDashboard, {
+    currentTool: "T25", wearDemo: { enabled: true, thresholds: { diameter: 0.1, length: 0.1 }, prediction: null, alerts: [],
+      toolMeasurement: { machineId: "Makino_01", toolNo: "25", timestampUtc: new Date().toISOString(), diameter: 0.08, length: 0.03 } },
+  })));
+  expect(chart().getAttribute("aria-label")).toContain("1 measured");
+  expect([...chart().querySelectorAll("title")].filter(title => title.textContent?.startsWith("Measured "))).toHaveLength(2);
 });
 
 it("refreshes the history on demand with the dates currently chosen, without polling", async () => {

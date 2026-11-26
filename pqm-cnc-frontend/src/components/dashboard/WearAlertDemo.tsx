@@ -5,7 +5,7 @@ import { Panel } from "./Panel";
 import type { WearEvent } from "./WearEventLog";
 
 type Values = { diameter: number; length: number };
-export type WearPrediction = Values & { machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
+export type WearPrediction = Values & { predictionId?: string; machineId: string; toolNo: string; timestampUtc: string; index?: number; balloonId?: string; quality?: number };
 type Prediction = WearPrediction;
 export type ToolWearAlert = {
   kind?: "tool_wear";
@@ -29,7 +29,7 @@ type QualityAlert = {
 export type WearAlert = ToolWearAlert | QualityAlert;
 /**
  * Laser inspection the operator confirmed for a tool wear alert. `result` appears once the controller reports new
- * wear values (status "result_ready"); `actual` is the wear measured after the inspection.
+ * image (status "result_ready"); wear values arrive independently in `result`.
  */
 export type WearInspection = {
   alertId: string;
@@ -37,6 +37,7 @@ export type WearInspection = {
   toolNo: string | number;
   status: "awaiting_result" | "result_ready" | "second_run_requested" | "dismissed" | "superseded";
   confirmedAt: string;
+  image?: { captureId: string; receivedAt: string } | null;
   result: null | {
     timestampUtc: string;
     actual: Values;
@@ -47,7 +48,7 @@ export type WearInspection = {
 };
 export type QualitySpec = { nominal: number; upperTol: number; lowerTol: number };
 /** Controller NC line watch: the backend starts a prediction when the value changes to one of `triggerValues`. */
-export type NcWatch = { field: string; triggerValues: string[]; rangeValues?: [number, number]; fallbackSeconds?: number; fallbackPending?: boolean; running: boolean; value: string | null; lastTriggerAt: string | null };
+export type NcWatch = { field: string; triggerValues: string[]; rangeValues?: [number, number]; running: boolean; value: string | null; lastTriggerAt: string | null };
 export type WearAlertSnapshot = {
   enabled: boolean;
   thresholds: Values;
@@ -67,7 +68,8 @@ export type WearAlertSnapshot = {
   /** The most recent laser inspection (null before the first one). */
   inspection?: WearInspection | null;
   /** Last measured diameter (mm) sampled from the controller when the NC line reaches the QC step. */
-  lastQc?: { value: number; timestampUtc: string; machineId?: string; toolNo?: string | number | null } | null;
+  lastQc?: { value: number; timestampUtc: string; predictionId?: string | null; machineId?: string; toolNo?: string | number | null } | null;
+  toolMeasurement?: Values & { toolNo: string | number; timestampUtc: string; machineId: string } | null;
   /** 1-based index the next automatic trigger will use. */
   nextIndex?: number;
   alerts: WearAlert[];
@@ -231,7 +233,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
     setBusy(true);
     const result = await simulateInspectionWear(alertId, Number(form.get("diameter")), Number(form.get("length")));
     setMessage(!result ? "Request failed."
-      : result.status === "result_ready" ? "Inspection result ready." : "Those values are the same as before the inspection — enter new values.");
+      : result.result ? "Wear measurement received." : "Those values are the same as before the inspection — enter new values.");
     setBusy(false);
   }
 
@@ -312,11 +314,11 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
           NC line watch: {snapshot.ncWatch.running ? "running" : "standby"}
           {` · ${snapshot.ncWatch.field} = ${snapshot.ncWatch.value ?? "–"} · auto-trigger when it becomes ${snapshot.ncWatch.triggerValues.join(" or ")}`}
           {snapshot.ncWatch.rangeValues ? ` or first enters ${snapshot.ncWatch.rangeValues[0]}–${snapshot.ncWatch.rangeValues[1]}` : ""}
-          {snapshot.ncWatch.fallbackSeconds ? ` · fallback ${snapshot.ncWatch.fallbackSeconds} s${snapshot.ncWatch.fallbackPending ? " (armed)" : ""}` : ""}
           {snapshot.ncWatch.lastTriggerAt ? ` · last auto trigger ${new Date(snapshot.ncWatch.lastTriggerAt).toLocaleTimeString()}` : ""}
         </p>
       )}
-      {!settings && snapshot?.inspection?.status === "awaiting_result" && (
+      {!settings && snapshot?.inspection && !snapshot.inspection.result
+        && ["awaiting_result", "result_ready"].includes(snapshot.inspection.status) && (
         <form className="mt-2 flex flex-wrap items-end gap-2 text-xs" onSubmit={simulateWear} data-testid="simulate-wear">
           <p className="w-full text-[#8296a8]">Laser inspection is waiting for the controller's new wear values.</p>
           {fields.map(field => (

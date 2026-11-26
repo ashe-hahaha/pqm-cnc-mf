@@ -7,6 +7,7 @@ import { WearInspectionPopup } from "./WearInspectionPopup";
 
 const inspection = (over: Partial<WearInspection> = {}): WearInspection => ({
   alertId: "a-1", machineId: "Makino_01", toolNo: "25", status: "result_ready", confirmedAt: "2026-11-19T01:00:00Z",
+  image: { captureId: "photo-1", receivedAt: "2026-11-19T01:01:00Z" },
   result: {
     timestampUtc: "2026-11-19T01:02:00Z", actual: { diameter: 0.08, length: 0.2 }, predicted: { diameter: 0.35, length: 0.18 },
     thresholds: { diameter: 0.1, length: 999 }, exceeded: [],
@@ -25,6 +26,12 @@ it("shows wear with five decimals without threshold comparisons and asks for a s
   expect(host.querySelector('[role="alertdialog"]')).toBeNull();
   await render(inspection({ status: "awaiting_result", result: null }));  // still waiting for the controller
   expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+  await render(inspection({ status: "awaiting_result", image: null }));  // wear arrived, image has not
+  expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+  await render(inspection({ result: null }));  // image alone opens the popup
+  expect(host.querySelector('[role="alertdialog"]')).not.toBeNull();
+  expect(host.textContent).toContain("Waiting for measurement");
+  expect(host.textContent).toContain("Yes, rework");
 
   await render(inspection());
   const dialog = host.querySelector('[role="alertdialog"]')!;
@@ -36,14 +43,14 @@ it("shows wear with five decimals without threshold comparisons and asks for a s
   expect(dialog.textContent).toContain("Predicted 0.35000 mm");
   expect(dialog.textContent).toContain("Predicted 0.18000 mm");
   expect(dialog.textContent).not.toMatch(/threshold/i);
-  expect(dialog.textContent).toContain("Do you want to perform a second run?");
+  expect(dialog.textContent).toContain("Do you want to perform rework?");
 
   await render(inspection({ result: { ...inspection().result!, actual: { diameter: 0.234567, length: 0.2 }, exceeded: ["diameter"] } }));
   expect(host.textContent).toContain("0.23457 mm");
   expect(host.textContent).not.toMatch(/threshold/i);
 
   const buttons = [...host.querySelectorAll("button")];
-  await act(async () => buttons.find(b => b.textContent === "Yes, second run")!.click());
+  await act(async () => buttons.find(b => b.textContent === "Yes, rework")!.click());
   expect(onSecondRun).toHaveBeenCalledWith("a-1");
   await act(async () => buttons.find(b => b.textContent === "Not now")!.click());
   expect(onDismiss).toHaveBeenCalledWith("a-1");

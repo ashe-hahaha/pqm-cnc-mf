@@ -42,7 +42,6 @@ export function JobContextHeader({
     drawing?.jobId && drawing.jobId !== "_uploads"
       ? drawing.jobName
       : job.productCode;
-  const program = drawing?.programName ?? job.programName;
   const batchPct = Math.round((job.batchCompleted / job.batchTotal) * 100);
   const inspectPct = Math.round((job.inspectedParts / job.batchTotal) * 100);
 
@@ -140,9 +139,9 @@ export function JobContextHeader({
         <Field label="Machine" value={job.machineCode} />
         <Field label="Product ID" value={product} />
         <Field label="Work Order" value={job.workOrder} />
-        <Field label="Program" value={program} />
-        <Field label="Current Operation" value={job.currentOperation} />
-        <Field label="Current Tool" value={job.currentTool} />
+        <Field label="Program" value="fxc_hole9" />
+        <Field label="Current Operation" value="Finishing Griding" />
+        <Field label="Current Tool" value="25(OSG ED-EM-6)" />
         <Field label="Balloon" value={selected?.code ?? "—"} />
         <Field label="Material" value={job.material} />
         <ProgressField

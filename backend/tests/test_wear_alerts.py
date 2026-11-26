@@ -48,10 +48,10 @@ def test_second_cutting_delays_then_finishes_on_range_prediction(tmp_path):
     async def run():
         settings, service = make_service(tmp_path)
         settings.tool_wear_second_run_cutting_delay_seconds = 0
-        settings.tool_wear_nc_fallback_seconds = 0
         alert = make_alert(service)
         confirm(service, alert)
         service.simulate_wear(alert["alertId"], WearValues(diameter=0.08, length=0.03))
+        receive_photo(service)
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(wear_alerts=service)))
         await wear_alerts.second_run(request, alert["alertId"])
         timer = service.cutting_task
@@ -93,6 +93,59 @@ def test_second_prediction_before_delay_cancels_cutting_and_reset_clears_state(t
 def confirm(service, alert):
     """The operator chose "Yes, laser inspection" for this alert (this is what queues the Kafka notification)."""
     return service.start_inspection(alert["alertId"])
+
+
+def receive_photo(service, **overrides):
+    inspection = service.snapshot()["inspection"]
+    image = {"captureId": f'photo-{inspection["alertId"]}', "machineId": inspection["machineId"],
+             "toolNo": inspection["toolNo"],
+             "receivedAt": (datetime.fromisoformat(inspection["confirmedAt"]) + timedelta(milliseconds=1)).isoformat()}
+    service.log_photo({**image, **overrides})
+    return image
+
+
+def test_no_prediction_timer_after_first_run_end(tmp_path, monkeypatch):
+    async def run():
+        _, service = make_service(tmp_path)
+        monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0)
+        state, machine = {}, service.settings.signals_machine_id
+        service.on_signals(machine, batch((1, 5)), state)
+        service.on_signals(machine, batch((2, 22)), state)
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 1
+        assert not hasattr(service, "nc_fallback")
+        assert "fallbackSeconds" not in service.snapshot()["ncWatch"]
+        service.on_signals(machine, batch((3, 50)), state)
+        await asyncio.sleep(0)
+        assert len(service.snapshot()["history"]) == 1
+        service.on_signals(machine, batch((4, 73)), state)
+        await asyncio.gather(*service.background)
+        assert len(service.snapshot()["history"]) == 2
+        await service.close()
+    asyncio.run(run())
+
+
+def test_image_first_opens_popup_and_wear_can_arrive_after_rework(tmp_path):
+    _, service = make_service(tmp_path)
+    alert = make_alert(service)
+    confirmation = confirm(service, alert)
+    receive_photo(service, receivedAt=confirmation["confirmedAt"], captureId="old")
+    receive_photo(service, machineId="other", captureId="wrong-machine")
+    receive_photo(service, toolNo="167", captureId="wrong-tool")
+    assert service.snapshot()["inspection"]["status"] == "awaiting_result"
+    image = receive_photo(service, toolNo="025")
+    ready = service.snapshot()["inspection"]
+    assert ready["status"] == "result_ready" and ready["result"] is None
+    assert ready["image"]["captureId"] == image["captureId"]
+    service.request_second_run(alert["alertId"])
+    receive_photo(service, captureId="duplicate-later")
+    assert service.snapshot()["inspection"]["status"] == "second_run_requested"
+    assert service.on_wear("25", 0.08, 0.03, "2026-11-26T01:00:00Z")
+    snapshot = service.snapshot()
+    assert snapshot["inspection"]["status"] == "second_run_requested"
+    assert snapshot["inspection"]["result"]["actual"]["diameter"] == 0.08
+    assert snapshot["toolMeasurement"]["diameter"] == 0.08
+    assert WearAlerts(service.settings).snapshot()["inspection"]["image"] == ready["image"]
 
 
 def test_finished_balloon_quality_history_is_all_within_default_tolerance(tmp_path):
@@ -280,7 +333,6 @@ def test_nc_line_watcher_triggers_on_a_change_to_a_trigger_value(tmp_path):
         assert len(service.snapshot()["history"]) == 2
         started = [e for e in service.snapshot()["events"] if e["label"] == "Prediction started"]
         assert started[-1]["detail"] == "NC line 29 → 74"
-        assert service.snapshot()["ncWatch"]["fallbackPending"] is False  # the range trigger cancelled the fallback
 
     asyncio.run(run())
 
@@ -290,7 +342,6 @@ def test_first_run_end_predicts_once_for_either_end_line(tmp_path, monkeypatch, 
     async def run():
         monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0)
         settings, service = make_service(tmp_path)
-        settings.tool_wear_nc_fallback_seconds = 0
         machine, state = settings.signals_machine_id, {}
         service.on_signals(machine, batch((1, 5)), state)
         assert service.cutting["status"] == "cutting"
@@ -335,7 +386,6 @@ def test_nc_line_watcher_first_batch_cooldown_and_null(tmp_path):
         service.on_signals(machine, batch((6, 30), (7, 29)), state)
         await asyncio.gather(*service.background)
         assert len(service.snapshot()["history"]) == 2
-        service.cancel_fallback()
 
         # Another machine and a different configuration (with spaces, a duplicate and numbers) behave as configured.
         service.on_signals("Other", batch((8, 30), (9, 29)), {})
@@ -378,78 +428,6 @@ def test_nc_range_triggers_only_on_first_entry(tmp_path):
     asyncio.run(run())
 
 
-def test_nc_fallback_fires_once_after_the_delay_and_enters_cooldown(tmp_path, monkeypatch):
-    async def run():
-        monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0.05)
-        settings, service = make_service(tmp_path)
-        settings.tool_wear_nc_fallback_seconds = 0.2
-        service.PREDICTION_DELAY_S = 0
-        machine, state = settings.signals_machine_id, {}
-        assert service.snapshot()["ncWatch"]["fallbackSeconds"] == 0.2
-
-        service.on_signals(machine, batch((1, 20)), state)
-        service.on_signals(machine, batch((2, 29)), state)  # first trigger arms the fallback
-        await asyncio.gather(*service.background)
-        assert len(service.snapshot()["history"]) == 1
-        assert service.snapshot()["ncWatch"]["fallbackPending"] is True
-        first_trigger = service.nc_last_trigger
-
-        await asyncio.sleep(0.5)                            # no 73-74 within the delay -> second trigger
-        await asyncio.gather(*service.background)
-        snapshot = service.snapshot()
-        assert len(snapshot["history"]) == 2
-        assert snapshot["ncWatch"]["fallbackPending"] is False
-        started = [e for e in snapshot["events"] if e["label"] == "Prediction started"]
-        assert started[-1]["detail"].startswith("NC line fallback")
-        assert service.nc_last_trigger > first_trigger      # the fallback entered the cooldown too
-
-        await asyncio.sleep(0.5)                            # it fires only once
-        assert len(service.snapshot()["history"]) == 2
-
-    asyncio.run(run())
-
-
-def test_nc_fallback_is_cancelled_by_a_range_trigger_and_can_be_disabled(tmp_path, monkeypatch):
-    async def run():
-        monkeypatch.setattr(wear_alerts, "NC_COOLDOWN_S", 0.05)
-        settings, service = make_service(tmp_path)
-        settings.tool_wear_nc_fallback_seconds = 0.3
-        service.PREDICTION_DELAY_S = 0
-        machine, state = settings.signals_machine_id, {}
-        status = lambda: service.snapshot()["ncWatch"]["fallbackPending"]
-
-        service.on_signals(machine, batch((1, 20)), state)
-        service.on_signals(machine, batch((2, 29)), state)
-        service.on_signals(machine, batch((3, 73)), state)  # inside the cooldown: ignored, fallback stays armed
-        await asyncio.gather(*service.background)
-        assert len(service.snapshot()["history"]) == 1 and status() is True
-
-        await asyncio.sleep(0.1)                            # cooldown over
-        service.on_signals(machine, batch((4, 20), (5, 74)), state)  # entering the range again triggers and cancels
-        await asyncio.gather(*service.background)
-        assert len(service.snapshot()["history"]) == 2 and status() is False
-        await asyncio.sleep(0.5)
-        assert len(service.snapshot()["history"]) == 2      # the fallback never fired
-
-        service.cancel_fallback()
-        settings.tool_wear_nc_fallback_seconds = 0          # 0 disables the fallback
-        settings.tool_wear_nc_trigger_values = "30"        # use a reusable custom trigger to isolate fallback behaviour
-        await asyncio.sleep(0.1)
-        service.on_signals(machine, batch((6, 20), (7, 30)), state)
-        await asyncio.gather(*service.background)
-        assert len(service.snapshot()["history"]) == 3 and status() is False
-
-        settings.tool_wear_nc_fallback_seconds = 5          # a new start trigger re-arms; reset-like cancel clears it
-        await asyncio.sleep(0.1)
-        service.on_signals(machine, batch((8, 20), (9, 30)), state)
-        await asyncio.gather(*service.background)
-        assert status() is True
-        service.cancel_fallback()
-        assert status() is False
-
-    asyncio.run(run())
-
-
 def qc_batch(*rows):
     """rows: (second, nc_line, macros) -> a process batch whose rows carry a `macros` map."""
     return {"process": [{"timestamp": f"2026-11-12T02:31:{second:02d}.000Z", "nc_line": line, "macros": macros}
@@ -465,34 +443,62 @@ def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path)
         last_qc = lambda: service.snapshot()["lastQc"]
         assert last_qc() is None
 
-        watch((1, 92, {"106": 9.5}))                       # first batch: only recorded, even if it is 93 later
-        watch((2, 93, {"106": 18.012}), (3, 93, {"106": 18.02}))  # arrival at 93 samples once (first row of the stay)
+        watch((1, 92, {"956": 9.5}))                       # first batch: only recorded, even if it is 93 later
+        watch((2, 93, {"956": 18.012}), (3, 93, {"956": 18.02}))  # arrival at 93 samples once (first row of the stay)
         await asyncio.gather(*service.background)
-        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "106"
+        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "956"
         assert last_qc()["timestampUtc"] == "2026-11-12T02:31:02.000Z"
         assert service.snapshot()["history"] == []         # no prediction was started
-        assert service.snapshot()["ncWatch"]["fallbackPending"] is False
         labels = [e["label"] for e in service.snapshot()["events"]]
         assert labels == ["QC measured"]
 
-        watch((4, 93, {"106": 18.03}))                       # still at 93: no new sample
+        watch((4, 93, {"956": 18.03}))                       # still at 93: no new sample
         assert last_qc()["value"] == 18.012
 
-        for i, macros in enumerate(({}, {"955": 1.0}, {"106": None}, {"106": float("nan")}, None, {"106": "x"})):
+        for i, macros in enumerate(({}, {"955": 1.0}, {"956": None}, {"956": float("nan")}, None, {"956": "x"})):
             watch((10 + 2 * i, 40, {}))
             watch((11 + 2 * i, 93, macros))                # no usable value: last QC stays, a note is logged
             assert last_qc()["value"] == 18.012
         assert [e["label"] for e in service.snapshot()["events"]].count("QC not available") == 6
 
         watch((30, 40, {}))
-        watch((31, 93, {"106": 18}))                       # integers are fine; a newer value replaces the old one
-        assert last_qc()["value"] == 18.0
+        watch((31, 93, {"956": 18}))                       # one measurement per demo; later values do not replace it
+        assert last_qc()["value"] == 18.012
 
         restarted = WearAlerts(service.settings)           # persisted
-        assert restarted.snapshot()["lastQc"]["value"] == 18.0
+        assert restarted.snapshot()["lastQc"]["value"] == 18.012
         service.reset()
         assert service.snapshot()["lastQc"] is None        # Reset demo clears it
 
+    asyncio.run(run())
+
+
+def test_demo_measurements_persist_once_and_qc_waits_for_rework_prediction(tmp_path):
+    async def run():
+        _, service = make_service(tmp_path)
+        alert = make_alert(service)
+        confirm(service, alert)
+        service.on_wear("25", 0.08, 0.03, "2026-11-26T01:00:00Z")
+        measured = service.snapshot()["toolMeasurement"]
+        assert (measured["diameter"], measured["length"]) == (0.08, 0.03)
+        another = make_alert(service)
+        confirm(service, another)
+        service.on_wear("25", 0.09, 0.04, "2026-11-26T01:01:00Z")
+        assert service.snapshot()["toolMeasurement"] == measured
+        service.arm_second_cutting(another["alertId"])
+        service.record_qc({"timestamp": "2026-11-26T01:02:00Z", "macros": {"956": 18.02}})
+        assert service.snapshot()["lastQc"]["predictionId"] is None
+        result = await service.run_prediction(MockPrediction(index=1))
+        qc = service.snapshot()["lastQc"]
+        assert qc["predictionId"] == result["prediction"]["predictionId"]
+        service.record_qc({"timestamp": "2026-11-26T01:03:00Z", "macros": {"956": 18.03}})
+        assert service.snapshot()["lastQc"] == qc
+        restarted = WearAlerts(service.settings)
+        assert restarted.snapshot()["lastQc"] == qc
+        assert restarted.snapshot()["toolMeasurement"] == measured
+        service.reset()
+        assert service.snapshot()["lastQc"] is None and service.snapshot()["toolMeasurement"] is None
+        await service.close()
     asyncio.run(run())
 
 
@@ -503,8 +509,9 @@ def test_out_of_spec_qc_is_shown_as_the_fixed_passing_value(tmp_path):
         seconds = iter(range(1, 100))
 
         def measure(value):
+            service.reset()  # each case is a separate demo, with one quality measurement
             service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)
-            service.on_signals(machine, qc_batch((next(seconds), 93, {"106": value})), state)
+            service.on_signals(machine, qc_batch((next(seconds), 93, {"956": value})), state)
             return service.snapshot()["lastQc"]["value"]
 
         service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)  # first batch
@@ -736,7 +743,7 @@ def test_inspection_result_arrives_with_a_new_wear_value_then_second_run_is_sent
 
     assert service.on_wear("25", 0.08, 0.03, "2026-11-19T01:00:04+00:00") is True
     result = service.snapshot()["inspection"]
-    assert result["status"] == "result_ready"
+    assert result["status"] == "awaiting_result"  # wear alone must not open the popup
     assert result["result"] == {
         "timestampUtc": "2026-11-19T01:00:04+00:00", "actual": {"diameter": 0.08, "length": 0.03},
         "predicted": {"diameter": 0.35, "length": 0.18}, "thresholds": {"diameter": 0.1, "length": 0.05},
@@ -746,6 +753,8 @@ def test_inspection_result_arrives_with_a_new_wear_value_then_second_run_is_sent
     assert service.on_wear("25", 0.5, 0.5, "2026-11-19T01:00:05+00:00") is False  # a result is only recorded once
     assert service.snapshot()["inspection"]["result"]["actual"] == {"diameter": 0.08, "length": 0.03}
 
+    receive_photo(service)
+    assert service.snapshot()["inspection"]["status"] == "result_ready"
     service.request_second_run(alert["alertId"])
     service.request_second_run(alert["alertId"])  # a repeated click sends nothing more
     rows = outbox(service)
@@ -802,7 +811,7 @@ def test_a_newer_confirmation_supersedes_the_open_inspection_of_the_same_tool(tm
     assert states == ["superseded", "awaiting_result"]
     service.on_wear("25", 0.3, 0.3, "2026-11-19T04:00:00+00:00")
     assert service.snapshot()["inspection"]["alertId"] == second["alertId"]
-    assert service.snapshot()["inspection"]["status"] == "result_ready"
+    assert service.snapshot()["inspection"]["status"] == "awaiting_result"
 
 
 def test_controller_rows_in_signal_batches_complete_the_inspection_and_reset_clears_it(tmp_path):
@@ -829,7 +838,7 @@ def test_simulated_wear_takes_the_same_path_as_a_controller_row(tmp_path):
     alert = make_alert(service)
     confirm(service, alert)
     result = service.simulate_wear(alert["alertId"], WearValues(diameter=0.06, length=0.04))
-    assert result["status"] == "result_ready" and result["result"]["actual"] == {"diameter": 0.06, "length": 0.04}
+    assert result["status"] == "awaiting_result" and result["result"]["actual"] == {"diameter": 0.06, "length": 0.04}
     try:
         service.simulate_wear(alert["alertId"], WearValues(diameter=0.1, length=0.1))
     except HTTPException as exc:
