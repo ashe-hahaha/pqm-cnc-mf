@@ -24,6 +24,12 @@ from app.wear_series import FIXED_QUALITY_BY_BALLOON
 from app.wear_series import (B9_QUALITY_MEASUREMENTS, DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
+def history_timestamp(anchor: datetime, index: int) -> str:
+    """Entry ten is current; earlier entries alternate four/five days apart."""
+    days = sum(4 if step % 2 else 5 for step in range(index, 10))
+    return (anchor - timedelta(days=days)).isoformat()
+
+
 logger = logging.getLogger("uvicorn.error")
 router = APIRouter(prefix="/api/tool-wear/demo")
 METRICS = ("diameter", "length")
@@ -153,6 +159,7 @@ class WearAlerts:
                 );
                 CREATE INDEX IF NOT EXISTS predictions_tool ON predictions(machine, tool, seq);
                 CREATE TABLE IF NOT EXISTS quality_spec (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS history_clock (id INTEGER PRIMARY KEY, anchor TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS last_qc (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS demo_tool_measurement (id INTEGER PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY, next_index INTEGER NOT NULL);
@@ -170,6 +177,7 @@ class WearAlerts:
                     attempts INTEGER NOT NULL DEFAULT 0, due REAL NOT NULL DEFAULT 0
                 );
             """)
+            db.execute("INSERT OR IGNORE INTO history_clock VALUES (1, ?)", (datetime.now(timezone.utc).isoformat(),))
             default = QualitySpec(nominal=DEFAULT_QUALITY_SPEC[0], upperTol=DEFAULT_QUALITY_SPEC[1],
                                   lowerTol=DEFAULT_QUALITY_SPEC[2])
             db.execute("INSERT OR IGNORE INTO quality_spec VALUES (1, ?)", (default.model_dump_json(),))
@@ -252,17 +260,27 @@ class WearAlerts:
             tool_measurement = db.execute("SELECT body FROM demo_tool_measurement WHERE id=1").fetchone()
             inspection = db.execute("SELECT body FROM inspections ORDER BY seq DESC LIMIT 1").fetchone()
             tasks = self.pending_tasks(db)
+            anchor_stamp = db.execute("SELECT anchor FROM history_clock WHERE id=1").fetchone()[0]
+        history_points = [json.loads(row[0]) for row in reversed(history)]
+        measured_history = [point for point in history_points if point.get("qcValue") is not None]
+        historical_qc = ({"value": measured_history[-1]["qcValue"],
+                          "timestampUtc": measured_history[-1]["timestampUtc"],
+                          "predictionId": measured_history[-1]["predictionId"]} if measured_history else None)
+        ninth = next((point for point in history_points if point.get("index") == 9), None)
+        anchor = datetime.fromisoformat(ninth["timestampUtc"]) + timedelta(days=4) if ninth else datetime.fromisoformat(anchor_stamp)
+        def dated(series):
+            return [{**point, "timestampUtc": history_timestamp(anchor, point["index"])} for point in series]
         return {"enabled": self.settings.tool_wear_demo_enabled, "thresholds": json.loads(thresholds),
                 "prediction": json.loads(prediction[0]) if prediction else None,
-                "history": [json.loads(row[0]) for row in reversed(history)],
+                "history": history_points,
                 "series": [{"index": i + 1, "diameter": d, "length": l, "quality": q}
                            for i, (d, l, q) in enumerate(PREDICTION_SERIES)],
-                "fixedQualitySeries": [{"index": i + 1, "quality": q, "qcValue": FIXED_QUALITY_MEASUREMENTS.get(i + 1)}
-                                       for i, q in enumerate(FIXED_QUALITY_SERIES)],
+                "fixedQualitySeries": dated([{"index": i + 1, "quality": q, "qcValue": FIXED_QUALITY_MEASUREMENTS.get(i + 1)}
+                                       for i, q in enumerate(FIXED_QUALITY_SERIES)]),
                 "fixedQualitySpec": {"nominal": DEFAULT_QUALITY_SPEC[0], "upperTol": DEFAULT_QUALITY_SPEC[1], "lowerTol": DEFAULT_QUALITY_SPEC[2]},
-                "fixedQualityByBalloon": FIXED_QUALITY_BY_BALLOON,
+                "fixedQualityByBalloon": {key: dated(series) for key, series in FIXED_QUALITY_BY_BALLOON.items()},
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
-                "lastQc": json.loads(last_qc[0]) if last_qc else None,
+                "lastQc": json.loads(last_qc[0]) if last_qc else historical_qc,
                 "toolMeasurement": json.loads(tool_measurement[0]) if tool_measurement else None,
                 "ncWatch": self.nc_status(),
                 "cutting": dict(self.cutting),
@@ -659,8 +677,9 @@ class WearAlerts:
             db.execute("BEGIN IMMEDIATE")
             for table in ("predictions", "alerts", "outbox", "last_qc", "inspections", "demo_tool_measurement", "deferred_tasks", "kafka_receipts"):
                 db.execute(f"DELETE FROM {table}")
+            db.execute("INSERT OR REPLACE INTO history_clock VALUES (1, ?)", (now.isoformat(),))
             for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
-                stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()
+                stamp = history_timestamp(now, i + 1)
                 prediction = {"predictionId": str(uuid4()), "machineId": machine, "toolNo": TOOL_NO,
                               "timestampUtc": stamp, "source": "mock", "index": i + 1,
                               "diameter": diameter, "length": length,

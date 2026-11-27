@@ -16,8 +16,8 @@ import { WearAlertForm, requestWearRefresh, type WearAlertSnapshot } from "./Wea
 
 const DEFAULT_TOOL = "25";
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HISTORY_DAYS = 7;
-const DEFAULT_HISTORY_DAYS = 1;
+const HISTORY_DAYS = 90;
+const DEFAULT_HISTORY_DAYS = 45;
 
 /** YYYY-MM-DD of a moment in the browser's local time zone (the chart labels are local too). */
 function localDate(ms: number) {
@@ -86,7 +86,9 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
   const [dates, setDates] = useState({ start: "", end: "" });
   const [bounds, setBounds] = useState<{ start: string; end: string } | null>(null);
   const [rangeError, setRangeError] = useState<string | null>(null);
-  const history = useWearHistory(DEFAULT_HISTORY_DAYS * 24 * 60, bounds?.start, bounds?.end, selectedTool, bounds !== null);
+  // Controller discovery keeps its seven-day API limit; prediction dates are filtered separately.
+  const controllerStart = bounds ? new Date(Math.max(Date.parse(bounds.start), Date.parse(bounds.end) - 7 * DAY_MS)).toISOString() : undefined;
+  const history = useWearHistory(7 * 24 * 60, controllerStart, bounds?.end, selectedTool, bounds !== null);
   const [columns, setColumns] = useState({ tools: 240, diameter: 50, history: 50 });
   const gridRef = useRef<HTMLDivElement>(null);
   const controller = latestByTool[selectedTool];
@@ -136,7 +138,7 @@ export function ToolWearDashboard({ locked = false, wearDemo = null, events = []
     }
     const nextBounds = dateBounds(next.start, next.end);
     if ((Date.parse(`${next.end}T00:00:00Z`) - Date.parse(`${next.start}T00:00:00Z`)) / DAY_MS + 1 > HISTORY_DAYS) {  // calendar days
-      setRangeError("Choose a range of up to 7 days.");
+      setRangeError("Choose a range of up to 90 days.");
       return false;
     }
     setRangeError(null);

@@ -167,7 +167,7 @@ it("refreshes the history on demand with the dates currently chosen, without pol
 
   const end = host.querySelector<HTMLInputElement>('input[aria-label="Wear history end date"]')!;
   const startInput = host.querySelector<HTMLInputElement>('input[aria-label="Wear history start date"]')!;
-  expect(startInput.value).toBe("2026-11-04");
+  expect(startInput.value).toBe("2026-09-21");
   expect(end.value).toBe("2026-11-04");
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   await act(async () => { setValue.call(startInput, "2026-10-29"); startInput.dispatchEvent(new Event("input", { bubbles: true })); });

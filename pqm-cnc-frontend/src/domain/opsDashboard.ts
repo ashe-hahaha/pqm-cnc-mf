@@ -95,6 +95,7 @@ export interface BalloonProcessContext {
 }
 
 export interface QualityTrendPoint {
+  timestampUtc?: string;
   index: number;
   label: string;
   prediction: number;

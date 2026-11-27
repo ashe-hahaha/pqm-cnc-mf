@@ -68,7 +68,7 @@ def test_qc_macro_106_before_prediction_resolves_once_and_preserves_raw(tmp_path
         events = [e for e in service.snapshot()["events"] if e["label"] == "Measurement fallback applied"]
         assert events == []
         service.reset()
-        assert service.snapshot()["lastQc"] is None
+        assert service.snapshot()["lastQc"]["value"] == 17.9738
         await service.close()
     asyncio.run(run())
 

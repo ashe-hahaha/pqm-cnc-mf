@@ -31,16 +31,16 @@ export type QualityHistoryPoint = {
 
 /**
  * The backend's fixed series as a finished history for the balloons that are not live: all entries, in order.
- * It never changes with triggers, so the timestamp is a constant.
+ * Dates are supplied by the backend alongside the fixed values.
  */
 export function seriesHistory(
-  series: readonly { index: number; quality?: number; qcValue?: number | null }[] | undefined,
+  series: readonly { index: number; quality?: number; qcValue?: number | null; timestampUtc?: string }[] | undefined,
 ): QualityHistoryPoint[] {
   return (series ?? []).map((item) => ({
     index: item.index,
     quality: item.quality,
     qcValue: item.qcValue ?? undefined,
-    timestampUtc: "1970-01-01T00:00:00.000Z",
+    timestampUtc: item.timestampUtc ?? "1970-01-01T00:00:00.000Z",
   }));
 }
 
@@ -49,7 +49,7 @@ type Spec = Pick<DrawingBalloon, "nominal" | "upperTol" | "lowerTol" | "unit">;
 /** Prefer a balloon's own history; drawing imports may have different ids but retain B1–B8 codes. */
 export function fixedQualityHistory(
   balloon: Pick<DrawingBalloon, "id" | "code">,
-  histories: Record<string, { index: number; quality: number; qcValue?: number | null }[]> | undefined,
+  histories: Record<string, { index: number; quality: number; qcValue?: number | null; timestampUtc?: string }[]> | undefined,
   fallback: QualityHistoryPoint[],
 ): QualityHistoryPoint[] {
   const code = balloon.code.trim().toLowerCase().replace(/^b?0*([1-8])$/, "b$1");
@@ -97,6 +97,7 @@ export function qualityTrendFromHistory(
       ? [{
           index: point.index ?? i + 1,
           label: String(point.index ?? i + 1),
+          timestampUtc: point.timestampUtc,
           prediction: roundFor(point.quality, span),
           qcValue: measurement?.predictionId && point.predictionId === measurement.predictionId
             ? roundFor(measurement.value, span)

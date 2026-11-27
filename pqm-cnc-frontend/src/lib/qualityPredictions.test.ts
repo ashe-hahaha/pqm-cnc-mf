@@ -128,3 +128,11 @@ describe("seriesHistory (fixed record of the balloons that are not live)", () =>
     expect(qualityTrendFromHistory(history, { ...balloon, upperTol: 0.2 })[1].usl).toBe(18.2);
   });
 });
+
+
+it("preserves historical dates through fixed quality series and chart points", () => {
+  const timestampUtc = "2026-11-23T05:00:00Z";
+  const history = seriesHistory([{ index: 9, quality: 17.9737, qcValue: 17.9738, timestampUtc }]);
+  expect(history[0].timestampUtc).toBe(timestampUtc);
+  expect(qualityTrendFromHistory(history, { ...DEFAULT_SERIES_SPEC, unit: "mm" })[0]).toMatchObject({ timestampUtc, qcValue: 17.9738 });
+});

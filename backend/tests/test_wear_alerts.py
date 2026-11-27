@@ -650,7 +650,7 @@ def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path)
         restarted = WearAlerts(service.settings)           # persisted
         assert restarted.snapshot()["lastQc"]["value"] == 18.012
         service.reset()
-        assert service.snapshot()["lastQc"] is None        # Reset demo clears it
+        assert service.snapshot()["lastQc"]["value"] == 17.9738  # Reset restores historical QC
 
     asyncio.run(run())
 
@@ -679,7 +679,7 @@ def test_demo_measurements_persist_once_and_qc_waits_for_rework_prediction(tmp_p
         assert restarted.snapshot()["lastQc"] == qc
         assert restarted.snapshot()["toolMeasurement"] == measured
         service.reset()
-        assert service.snapshot()["lastQc"] is None and service.snapshot()["toolMeasurement"] is None
+        assert service.snapshot()["lastQc"]["value"] == 17.9738 and service.snapshot()["toolMeasurement"] is None
         await service.close()
     asyncio.run(run())
 
@@ -815,6 +815,12 @@ def test_reset_restores_the_first_nine_predictions(tmp_path):
     assert snapshot["thresholds"]["diameter"] == 0.1  # thresholds survive a reset
     stamps = [item["timestampUtc"] for item in snapshot["history"]]
     assert stamps == sorted(stamps)
+    dates = [datetime.fromisoformat(stamp) for stamp in stamps]
+    assert [(b - a).days for a, b in zip(dates, dates[1:])] == [4, 5, 4, 5, 4, 5, 4, 5]
+    assert abs((datetime.now(timezone.utc) - dates[-1]).total_seconds() - 4 * 86400) < 5
+    assert snapshot["lastQc"] == {"value": 17.9738, "timestampUtc": stamps[-1], "predictionId": snapshot["history"][-1]["predictionId"]}
+    service.record_qc({"timestamp": "2026-11-27T01:00:00Z", "macros": {"106": 18.01}})
+    assert service.snapshot()["lastQc"]["value"] == 18.01
     with closing(sqlite3.connect(service.path)) as db:
         assert db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
     assert service.record(MockPrediction())["prediction"]["index"] == 10

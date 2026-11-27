@@ -418,6 +418,7 @@ function TrendChart({ points }: { points: QualityTrendPoint[] }) {
         >
           <div className="flex items-center justify-between gap-2">
             <span className="font-medium text-[#c5d4e3]">Sample #{hover.label}</span>
+            {hover.timestampUtc && <span className="text-[#8296a8]">{new Date(hover.timestampUtc).toLocaleString()}</span>}
             <span
               className={cn(
                 "rounded px-1 text-[9px] font-bold uppercase",

@@ -60,8 +60,8 @@ export type WearAlertSnapshot = {
   /** Fixed prediction values that each trigger cycles through. */
   series?: { index: number; diameter: number; length: number; quality?: number }[];
   /** Finished B1–B8 quality history, separate from B9's abnormal prediction demo. */
-  fixedQualitySeries?: { index: number; quality: number; qcValue?: number | null }[];
-  fixedQualityByBalloon?: Record<string, { index: number; quality: number; qcValue?: number | null }[]>;
+  fixedQualitySeries?: { index: number; quality: number; qcValue?: number | null; timestampUtc?: string }[];
+  fixedQualityByBalloon?: Record<string, { index: number; quality: number; qcValue?: number | null; timestampUtc?: string }[]>;
   fixedQualitySpec?: QualitySpec;
   /** Balloon the quality value of each prediction belongs to. */
   qualityBalloonId?: string;
