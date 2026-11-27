@@ -125,4 +125,4 @@ def test_existing_inspection_popup_restores_original_values_and_preserves_stage(
     assert restored["status"] == "awaiting_result"  # image-driven popup timing is untouched
     assert restored["result"]["actual"] == {"diameter": 1, "length": 0.01}
     assert restored["result"]["measurement"]["displayValue"] == restored["result"]["actual"]
-    assert restored["result"]["exceeded"] == ["diameter", "length"]
+    assert restored["result"]["exceeded"] == []  # unchanged positive raw values are above the negative lower limits

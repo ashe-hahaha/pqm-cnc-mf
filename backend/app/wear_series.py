@@ -16,24 +16,24 @@ DEFAULT_QUALITY_SPEC = (18.0, 0.04, 0.04)
 # (diameter wear mm, tool length wear mm, quality value mm: 18 + the earlier flatness values)
 PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
     # 1-9: normal, small and slowly drifting values
-    (0.1152, 0.0038, 18.0120),
-    (0.1166, 0.0040, 18.0100),
-    (0.1178, 0.0041, 17.9980),
-    (0.1181, 0.0042, 17.9930),
-    (0.1188, 0.0043, 17.9920),
-    (0.1198, 0.0045, 17.9890),
-    (0.1202, 0.0047, 17.9889),
-    (0.1208, 0.0049, 17.9798),
-    (0.1210, 0.0050, 17.9737),
-    # 10: wear exceeds its upper limits; quality falls below LSL 17.96.
-    (0.1216, 0.0053, 17.9400),
+    (-0.1152, -0.0038, 18.0120),
+    (-0.1166, -0.0040, 18.0100),
+    (-0.1178, -0.0041, 17.9980),
+    (-0.1181, -0.0042, 17.9930),
+    (-0.1188, -0.0043, 17.9920),
+    (-0.1198, -0.0045, 17.9890),
+    (-0.1202, -0.0047, 17.9889),
+    (-0.1208, -0.0049, 17.9798),
+    (-0.1210, -0.0050, 17.9737),
+    # 10: wear falls below its lower limits; quality falls below LSL 17.96.
+    (-0.1216, -0.0053, 17.9400),
 )
 
-DEFAULT_WEAR_THRESHOLDS = {"diameter": 0.121, "length": 0.005}
+DEFAULT_WEAR_THRESHOLDS = {"diameter": -0.121, "length": -0.005}
 HISTORICAL_WEAR_MEASUREMENTS = {
-    3: {"diameter": 0.11779, "length": 0.00408},
-    6: {"diameter": 0.11982, "length": 0.00449},
-    9: {"diameter": 0.12098, "length": 0.00499},
+    3: {"diameter": -0.11779, "length": -0.00408},
+    6: {"diameter": -0.11982, "length": -0.00449},
+    9: {"diameter": -0.12098, "length": -0.00499},
 }
 
 # Finished balloons B1–B8 have a separate, entirely passing quality history.

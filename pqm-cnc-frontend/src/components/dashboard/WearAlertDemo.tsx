@@ -284,7 +284,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
         {settings ? fields.map(field => (
           <label key={`${field}:${snapshot?.thresholds[field]}`}>
             {field === "diameter" ? "Diameter" : "Length"} threshold (mm)
-            <input className={fieldStyle} name={field} type="number" min="0" step="any" required
+            <input className={fieldStyle} name={field} type="number" step="any" required
               defaultValue={snapshot?.thresholds[field] ?? 999} />
           </label>
         )) : (
@@ -336,7 +336,7 @@ export function WearAlertForm({ snapshot, settings = false, bare = false }: {
           {fields.map(field => (
             <label key={field}>
               {field === "diameter" ? "Diameter wear" : "Tool length wear"} (mm)
-              <input className={fieldStyle} name={field} type="number" min="0" step="any" required />
+              <input className={fieldStyle} name={field} type="number" step="any" required />
             </label>
           ))}
           <button className={buttonStyle} disabled={busy}>Simulate new wear</button>

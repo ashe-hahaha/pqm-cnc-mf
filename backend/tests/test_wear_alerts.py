@@ -52,7 +52,7 @@ def test_quality_004_migration_updates_saved_spec_once(tmp_path):
 
 def test_new_wear_series_defaults_reset_and_tenth_prediction_alarm(tmp_path):
     settings, service = make_service(tmp_path)
-    assert service.snapshot()["thresholds"] == {"diameter": 0.121, "length": 0.005}
+    assert service.snapshot()["thresholds"] == {"diameter": -0.121, "length": -0.005}
     for index in range(1, 10):
         assert service.record(MockPrediction(index=index))["alert"] is None
     service.reset()
@@ -125,10 +125,10 @@ def test_saved_wear_history_is_migrated_once_without_changing_quality_or_timesta
         db.execute("UPDATE predictions SET body=?", (json.dumps(legacy),))
     migrated = WearAlerts(settings).snapshot()
     point = migrated["history"][0]
-    assert (point["diameter"], point["length"], point["quality"]) == (0.1178, 0.0041, 18.055)
+    assert (point["diameter"], point["length"], point["quality"]) == (-0.1178, -0.0041, 18.055)
     assert point["timestampUtc"] == old["timestampUtc"] and point["predictionId"] == old["predictionId"]
-    assert point["measured"] == {"diameter": 0.11779, "length": 0.00408}
-    assert migrated["thresholds"] == {"diameter": 0.121, "length": 0.005}
+    assert point["measured"] == {"diameter": -0.11779, "length": -0.00408}
+    assert migrated["thresholds"] == {"diameter": -0.121, "length": -0.005}
 
 
 def test_first_cutting_reads_initial_window_and_finishes_at_29(tmp_path):
@@ -343,7 +343,7 @@ def test_selected_index_is_used_then_cycle_continues(tmp_path):
 
 def test_every_exceeding_prediction_alerts_and_enqueues(tmp_path):
     _, service = make_service(tmp_path)
-    service.set_thresholds(WearValues(diameter=0.121, length=999))
+    service.set_thresholds(WearValues(diameter=-0.121, length=999))
 
     assert service.record(MockPrediction(index=9))["alert"] is None  # 0.07 mm, normal
     first = service.record(MockPrediction(index=10))["alert"]  # 0.35 mm, the abnormal value
@@ -413,7 +413,7 @@ def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
     async def run():
         _, service = make_service(tmp_path)
         service.PREDICTION_DELAY_S = 0.2  # a visible gap between "started" and the result
-        service.set_thresholds(WearValues(diameter=0.1, length=999))
+        service.set_thresholds(WearValues(diameter=-0.1, length=999))
         listener = asyncio.Queue()
         service.listeners.add(listener)
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(wear_alerts=service)))
@@ -730,7 +730,7 @@ def test_prediction_delay_comes_from_the_setting(tmp_path):
 
 def test_stale_pending_notifications_expire_and_are_logged(tmp_path):
     settings, service = make_service(tmp_path)
-    service.set_thresholds(WearValues(diameter=0.1, length=999))
+    service.set_thresholds(WearValues(diameter=-0.1, length=999))
     old, fresh = service.record(MockPrediction(index=10))["alert"], service.record(MockPrediction(index=10))["alert"]
     confirm(service, old), confirm(service, fresh)
     # Make the first notification 11 minutes old (limit: 10 minutes).
@@ -765,7 +765,7 @@ def test_stale_pending_notifications_expire_and_are_logged(tmp_path):
 def test_the_delivery_loop_drops_expired_notifications_instead_of_sending_them(tmp_path):
     async def run():
         settings, service = make_service(tmp_path)
-        service.set_thresholds(WearValues(diameter=0.1, length=999))
+        service.set_thresholds(WearValues(diameter=-0.1, length=999))
         alert = service.record(MockPrediction(index=10))["alert"]
         confirm(service, alert)
         with closing(sqlite3.connect(service.path)) as db, db:
@@ -802,7 +802,7 @@ def test_quality_alerts_are_listed_but_never_sent_to_kafka(tmp_path):
 
 def test_reset_restores_the_first_nine_predictions(tmp_path):
     _, service = make_service(tmp_path)
-    service.set_thresholds(WearValues(diameter=0.1, length=999))
+    service.set_thresholds(WearValues(diameter=-0.1, length=999))
     for _ in range(12):
         service.record(MockPrediction())
     assert service.snapshot()["alerts"]
@@ -812,7 +812,7 @@ def test_reset_restores_the_first_nine_predictions(tmp_path):
     assert [item["index"] for item in snapshot["history"]] == list(range(1, 10))
     assert snapshot["nextIndex"] == 10
     assert snapshot["alerts"] == []
-    assert snapshot["thresholds"]["diameter"] == 0.1  # thresholds survive a reset
+    assert snapshot["thresholds"]["diameter"] == -0.1  # thresholds survive a reset
     stamps = [item["timestampUtc"] for item in snapshot["history"]]
     assert stamps == sorted(stamps)
     dates = [datetime.fromisoformat(stamp) for stamp in stamps]
@@ -841,7 +841,7 @@ def test_snapshot_reports_destinations_and_pending_notifications(tmp_path):
     _, service = make_service(tmp_path)
     assert service.snapshot()["destinations"] == ["kafka"]
     assert service.snapshot()["pendingNotifications"] == 0
-    service.set_thresholds(WearValues(diameter=0.1, length=999))
+    service.set_thresholds(WearValues(diameter=-0.1, length=999))
     alert = service.record(MockPrediction(index=10))["alert"]
     assert service.snapshot()["pendingNotifications"] == 0
     confirm(service, alert)
@@ -885,7 +885,7 @@ def test_temi_trigger_is_an_empty_post_with_the_alert_id_as_idempotency_key(tmp_
 # ---- laser inspection → result → second run -------------------------------------------------------------------
 
 def make_alert(service, tool="25"):
-    service.set_thresholds(WearValues(diameter=0.1, length=0.05))
+    service.set_thresholds(WearValues(diameter=-0.1, length=-0.05))
     return service.record(MockPrediction(index=10))["alert"]  # diameter 0.35 and length 0.18: both above
 
 
@@ -934,7 +934,7 @@ def test_inspection_result_arrives_with_a_new_wear_value_then_second_run_is_sent
     assert result["status"] == "awaiting_result"  # wear alone must not open the popup
     assert {key: result["result"][key] for key in ("timestampUtc", "actual", "predicted", "thresholds", "exceeded")} == {
         "timestampUtc": "2026-11-19T01:00:04+00:00", "actual": {"diameter": 0.08, "length": 0.03},
-        "predicted": {"diameter": 0.1216, "length": 0.0053}, "thresholds": {"diameter": 0.1, "length": 0.05},
+        "predicted": {"diameter": -0.1216, "length": -0.0053}, "thresholds": {"diameter": -0.1, "length": -0.05},
         "exceeded": [],  # back within both thresholds
     }
     assert "Inspection result received" in [e["label"] for e in service.snapshot()["events"]]
@@ -958,7 +958,7 @@ def test_a_still_exceeding_result_is_reported_and_no_baseline_means_the_first_pa
     _, service = make_service(tmp_path)
     alert = make_alert(service)
     assert confirm(service, alert)["baseline"] == {"diameter": None, "length": None}  # nothing measured before the inspection
-    assert service.on_wear("25", 0.2, 0.01, "2026-11-19T02:00:00+00:00") is True
+    assert service.on_wear("25", -0.2, -0.01, "2026-11-19T02:00:00+00:00") is True
     assert service.snapshot()["inspection"]["result"]["exceeded"] == ["diameter"]
 
 
@@ -1031,3 +1031,22 @@ def test_simulated_wear_takes_the_same_path_as_a_controller_row(tmp_path):
         service.simulate_wear(alert["alertId"], WearValues(diameter=0.1, length=0.1))
     except HTTPException as exc:
         assert exc.status_code == 409
+
+
+def test_negative_wear_migration_preserves_real_measurements_and_dates(tmp_path):
+    settings, service = make_service(tmp_path)
+    prediction = service.record(MockPrediction(index=9))["prediction"]
+    service.record_qc({"timestamp": "2026-11-27T01:00:00Z", "macros": {"106": 18.001}})
+    with closing(sqlite3.connect(service.path)) as db, db:
+        db.execute("DELETE FROM settings_migrations WHERE name='negative-wear-20261127'")
+        db.execute("UPDATE thresholds SET body=?", (json.dumps({"diameter": 0.121, "length": 0.005}),))
+        prediction.update(diameter=0.121, length=0.005, measured={"diameter": 0.12098, "length": 0.00499})
+        db.execute("UPDATE predictions SET body=?", (json.dumps(prediction),))
+    snapshot = WearAlerts(settings).snapshot()
+    point = snapshot["history"][0]
+    assert point["diameter"] == -0.121 and point["length"] == -0.005
+    assert point["measured"] == {"diameter": -0.12098, "length": -0.00499}
+    assert point["timestampUtc"] == prediction["timestampUtc"] and point["quality"] == prediction["quality"]
+    assert point["exceeded"] == []
+    assert snapshot["lastQc"]["value"] == 18.001
+    assert WearAlerts(settings).snapshot()["history"] == snapshot["history"]

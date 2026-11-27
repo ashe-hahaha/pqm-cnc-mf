@@ -1,4 +1,5 @@
 "use client";
+import { wearExceeded } from "@/lib/wearThreshold";
 
 import { useId, useState } from "react";
 import type { WearPrediction } from "./WearAlertDemo";
@@ -23,7 +24,7 @@ const PLOT_W = WIDTH - LEFT - 12;
 const PLOT_H = HEIGHT - TOP - 30;
 
 /**
- * Predicted diameter / length wear (lines + points, red above threshold) with optional measured markers.
+ * Predicted diameter / length wear (lines + points, red beyond the signed limit) with optional measured markers.
  * `xMode="index"` spaces predictions evenly by sequence; `"time"` places everything by timestamp.
  */
 export function WearPredictionChart({
@@ -43,7 +44,7 @@ export function WearPredictionChart({
   const [hover, setHover] = useState<number | null>(null);
   const fillId = useId();
   const latest = points.at(-1);
-  const exceeds = (key: SeriesKey, value: number) => thresholds !== undefined && value > thresholds[key];
+  const exceeds = (key: SeriesKey, value: number) => thresholds !== undefined && wearExceeded(value, thresholds[key]);
   const shown = SERIES.filter(item => visible[item.key]);
   const measuredShown = measured.filter(m => shown.some(item => m[item.key] !== null));
 
@@ -61,7 +62,7 @@ export function WearPredictionChart({
   const unsetNames = shown.filter(item => !limits.some(limit => limit.key === item.key)).map(item => item.short);
   // Dynamic y range: it always reaches 0 and grows downwards when a value (a measured point can be negative) goes below it.
   const dataTop = Math.max(dataMax, ...limits.map(item => item.limit));
-  const dataBottom = Math.min(0, dataMin);
+  const dataBottom = Math.min(0, dataMin, ...limits.map(item => item.limit));
   const range = dataTop - dataBottom;
   const max = dataTop + range * 0.18;
   const min = dataBottom < 0 ? dataBottom - range * 0.08 : 0;

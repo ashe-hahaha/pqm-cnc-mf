@@ -1,4 +1,5 @@
 "use client";
+import { wearExceeded } from "@/lib/wearThreshold";
 
 import { TrendPanel } from "./TrendPanel";
 import type { WearAlertSnapshot } from "./WearAlertDemo";
@@ -14,7 +15,7 @@ export function ToolWearTrend({ snapshot = null }: { snapshot?: WearAlertSnapsho
   const measurement = snapshot?.toolMeasurement;
   const latest = history.at(-1);
   const latestExceeded = latest && thresholds
-    ? latest.diameter > thresholds.diameter || latest.length > thresholds.length
+    ? wearExceeded(latest.diameter, thresholds.diameter) || wearExceeded(latest.length, thresholds.length)
     : false;
 
   return (

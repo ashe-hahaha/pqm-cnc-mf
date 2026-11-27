@@ -54,3 +54,17 @@ it("keeps a 0 baseline for positive values and extends the y axis below 0 for ne
   expect(labels.some(text => text?.startsWith("-0.1") || text?.startsWith("-0.2"))).toBe(true);  // negative tick labels
   expect(labels.filter(text => text === "0.0000")).toHaveLength(1);           // one 0 label, no duplicate tick
 });
+
+
+it("marks only the tenth negative wear prediction as exceeding its lower limit", async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => root.render(React.createElement(WearPredictionChart, {
+    points: [point(9, -0.121, -0.005, "2026-11-23T00:00:00Z"), point(10, -0.1216, -0.0053, "2026-11-27T00:00:00Z")],
+    thresholds: { diameter: -0.121, length: -0.005 },
+  })));
+  expect(host.textContent).toContain("D limit -0.12100 mm");
+  expect(host.querySelectorAll('circle[fill="#fb7185"]')).toHaveLength(2);
+  await act(async () => root.unmount()); host.remove();
+});

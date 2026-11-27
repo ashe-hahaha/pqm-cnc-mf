@@ -24,6 +24,11 @@ from app.wear_series import FIXED_QUALITY_BY_BALLOON
 from app.wear_series import (B9_QUALITY_MEASUREMENTS, DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
+def wear_exceeded(value: float, threshold: float) -> bool:
+    # Negative wear uses a lower limit; retain positive limits and the legacy 999 sentinel.
+    return value < threshold if threshold < 0 else value > threshold
+
+
 def history_timestamp(anchor: datetime, index: int) -> str:
     """Entry ten is current; earlier entries alternate four/five days apart."""
     days = sum(4 if step % 2 else 5 for step in range(index, 10))
@@ -51,8 +56,8 @@ WEAR_EPSILON = 1e-6  # mm; a wear value that differs by more than this counts as
 
 
 class WearValues(BaseModel):
-    diameter: float = Field(ge=0, allow_inf_nan=False)
-    length: float = Field(ge=0, allow_inf_nan=False)
+    diameter: float = Field(allow_inf_nan=False)
+    length: float = Field(allow_inf_nan=False)
 
 
 class QualitySpec(BaseModel):
@@ -190,7 +195,7 @@ class WearAlerts:
                     if isinstance(index, int) and 1 <= index <= len(PREDICTION_SERIES):
                         prediction.update(diameter=PREDICTION_SERIES[index - 1][0], length=PREDICTION_SERIES[index - 1][1],
                                           measured=HISTORICAL_WEAR_MEASUREMENTS.get(index))
-                        prediction["exceeded"] = [key for key in METRICS if prediction[key] > DEFAULT_WEAR_THRESHOLDS[key]]
+                        prediction["exceeded"] = [key for key in METRICS if wear_exceeded(prediction[key], DEFAULT_WEAR_THRESHOLDS[key])]
                         db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
 
             if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('quality-dimensions-20261126')").rowcount:
@@ -240,8 +245,34 @@ class WearAlerts:
                     if not isinstance(raw, dict):
                         continue
                     result.update(actual={**result["actual"], **raw}, rawActual=raw, measurement=tool_measurement(raw))
-                    result["exceeded"] = [key for key in METRICS if result["actual"][key] > result["thresholds"][key]]
+                    result["exceeded"] = [key for key in METRICS if wear_exceeded(result["actual"][key], result["thresholds"][key])]
                     db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
+
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('negative-wear-20261127')").rowcount:
+                thresholds = json.loads(db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0])
+                thresholds = {key: -abs(value) if value < 999 else value for key, value in thresholds.items()}
+                db.execute("UPDATE thresholds SET body=? WHERE id=1", (json.dumps(thresholds),))
+                for table in ("predictions", "alerts", "inspections"):
+                    for seq, body in db.execute(f"SELECT seq, body FROM {table}").fetchall():
+                        item = json.loads(body)
+                        def signed(values):
+                            for key in METRICS:
+                                if key in values and values[key] is not None and values[key] < 999:
+                                    values[key] = -abs(values[key])
+                        if table == "predictions":
+                            signed(item)
+                            if item.get("measured"):
+                                signed(item["measured"])
+                            item["exceeded"] = [key for key in METRICS if wear_exceeded(item[key], thresholds[key])]
+                        else:
+                            signed(item.get("prediction", item.get("predicted", {})))
+                            signed(item.get("thresholds", {}))
+                            if table == "inspections" and item.get("result"):
+                                result = item["result"]
+                                signed(result.get("predicted", {}))
+                                signed(result.get("thresholds", {}))
+                                result["exceeded"] = [key for key in METRICS if wear_exceeded(result["actual"][key], result["thresholds"][key])]
+                        db.execute(f"UPDATE {table} SET body=? WHERE seq=?", (json.dumps(item), seq))
 
         self.kafka_receipts = KafkaReceiptTracker(settings, self.path, self.log_event)
 
@@ -461,7 +492,7 @@ class WearAlerts:
                     "timestampUtc": stamp, "actual": actual, "predicted": inspection["predicted"],
                     "rawActual": checked["rawValue"], "measurement": checked,
                     "thresholds": thresholds,
-                    "exceeded": [metric for metric in METRICS if actual[metric] > thresholds[metric]],
+                    "exceeded": [metric for metric in METRICS if wear_exceeded(actual[metric], thresholds[metric])],
                 }
                 db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
                 measurement = {"toolNo": inspection["toolNo"], "machineId": inspection["machineId"],
@@ -648,7 +679,7 @@ class WearAlerts:
         alert = result["alert"]
         if alert:
             detail = " · ".join(
-                f'{metric.capitalize()} {prediction[metric]} mm > {alert["thresholds"][metric]} mm'
+                f'{metric.capitalize()} {prediction[metric]} mm {"<" if alert["thresholds"][metric] < 0 else ">"} {alert["thresholds"][metric]} mm'
                 for metric in alert["metrics"]
             )
             service.log_event("Alert triggered", TOOL_NO, timestamp=alert["timestampUtc"],
@@ -719,8 +750,8 @@ class WearAlerts:
                         qc.update(quality_measurement(qc.get("rawValue", qc["value"])))
                         db.execute("UPDATE last_qc SET body=? WHERE id=1", (json.dumps(qc),))
             thresholds = json.loads(db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0])
-            # Every metric above its threshold alerts, even if the previous prediction was also above.
-            triggered = [metric for metric in METRICS if prediction[metric] > thresholds[metric]]
+            # Each metric is checked against its signed wear limit.
+            triggered = [metric for metric in METRICS if wear_exceeded(prediction[metric], thresholds[metric])]
             db.execute("INSERT INTO predictions(machine, tool, body) VALUES (?, ?, ?)",
                        (machine, tool, json.dumps({**prediction, "exceeded": triggered})))
             if triggered:

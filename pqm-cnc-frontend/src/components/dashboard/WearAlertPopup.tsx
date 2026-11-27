@@ -53,7 +53,7 @@ export function WearAlertPopup({ alerts, destinations = [], onConfirm, onDismiss
           {alert.metrics.map(metric => (
             <li key={metric} className="flex items-baseline justify-between gap-3 rounded border border-[#2a3a4a] bg-[#0e1620] px-2.5 py-1.5">
               <span className="text-[#c6d7e4]">{METRIC_LABEL[metric]}</span>
-              <span className="tabular-nums text-rose-300">{prediction[metric]} mm <span className="text-[#8fa3b5]">&gt; {thresholds[metric]} mm</span></span>
+              <span className="tabular-nums text-rose-300">{prediction[metric]} mm <span className="text-[#8fa3b5]">{thresholds[metric] < 0 ? "<" : ">"} {thresholds[metric]} mm</span></span>
             </li>
           ))}
         </ul>
