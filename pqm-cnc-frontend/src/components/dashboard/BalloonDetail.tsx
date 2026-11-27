@@ -103,7 +103,7 @@ export function BalloonDetail({
             value={
               prediction.lastQcValue == null
                 ? "N/A"
-                : `${prediction.lastQcValue.toFixed(3)} ${balloon.unit}`
+                : `${prediction.lastQcValue.toFixed(5)} ${balloon.unit}`
             }
             note={formatQcTime(prediction.lastQcValue == null ? null : prediction.lastQcAt)}
           />

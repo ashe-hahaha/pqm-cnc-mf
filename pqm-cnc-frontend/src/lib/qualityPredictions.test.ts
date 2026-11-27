@@ -100,6 +100,26 @@ describe("quality predictions from backend history", () => {
     expect(qualityTrendFromHistory([at(0.027, 10)], wider)[0]!.usl).toBe(0.05);
     expect(qualityRisk(0.027, wider)).toBe("pass");
   });
+
+  it("uses each balloon's last historical measurement and date until real QC arrives", () => {
+    for (let i = 1; i <= 9; i++) {
+      const value = 17.973 + i * 0.0001;
+      const timestampUtc = "2026-11-23T05:00:00Z";
+      const history = [
+        { ...at(18.01, 3), qcValue: 18.0101 },
+        { ...at(17.9737, 9), qcValue: value, timestampUtc },
+        { ...at(17.94, 10), qcValue: null },
+        { ...at(18, 11), qcValue: Number.NaN },
+      ];
+      const balloon = { ...b1, id: `b${i}` };
+      const fallback = qualityPredictionFromHistory(history, balloon)!;
+      expect(fallback.lastQcValue).toBe(value);
+      expect(fallback.lastQcAt).toBe(timestampUtc);
+      const actual = qualityPredictionFromHistory(history, balloon, 18.00123, "2026-11-27T01:00:00Z")!;
+      expect(actual.lastQcValue).toBe(18.00123);
+      expect(actual.lastQcAt).toBe("2026-11-27T01:00:00Z");
+    }
+  });
 });
 
 describe("seriesHistory (fixed record of the balloons that are not live)", () => {

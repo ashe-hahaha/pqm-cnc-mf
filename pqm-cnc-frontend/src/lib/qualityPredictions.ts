@@ -112,7 +112,7 @@ export function qualityTrendFromHistory(
 /**
  * Latest prediction → Selected Balloon Detail values (confidence/pass probability are mock estimates).
  * `lastQcValue` / `lastQcAt` are the controller's last measured value for this balloon and when it was measured
- * (null/undefined = none yet).
+ * When no real QC is available, use this balloon's last historical measurement.
  */
 export function qualityPredictionFromHistory(
   history: readonly QualityHistoryPoint[],
@@ -122,6 +122,9 @@ export function qualityPredictionFromHistory(
 ): BalloonPrediction | null {
   const latest = [...history].reverse().find((point) => typeof point.quality === "number");
   if (!latest || typeof latest.quality !== "number") return null;
+  const historicalQc = [...history].reverse().find((point) =>
+    typeof point.qcValue === "number" && Number.isFinite(point.qcValue));
+  const hasRealQc = typeof lastQcValue === "number" && Number.isFinite(lastQcValue);
   const span = Math.max(balloon.upperTol + balloon.lowerTol, 1e-6);
   const margin = marginToBand(latest.quality, balloon);
   return {
@@ -132,7 +135,7 @@ export function qualityPredictionFromHistory(
     marginUnit: balloon.unit === "μm" ? "μm" : "mm",
     passProbability:
       margin < 0 ? 0.1 : Math.min(0.99, 0.5 + 0.49 * Math.min(1, margin / (span * 0.5))),
-    lastQcValue: typeof lastQcValue === "number" && Number.isFinite(lastQcValue) ? lastQcValue : null,
-    lastQcAt: typeof lastQcValue === "number" && Number.isFinite(lastQcValue) ? (lastQcAt ?? null) : null,
+    lastQcValue: hasRealQc ? lastQcValue : historicalQc?.qcValue ?? null,
+    lastQcAt: hasRealQc ? (lastQcAt ?? null) : historicalQc?.timestampUtc ?? null,
   };
 }
