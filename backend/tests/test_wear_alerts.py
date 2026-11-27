@@ -18,8 +18,24 @@ from app.wear_series import PREDICTION_SERIES
 def make_service(tmp_path):
     settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path),
                         tool_wear_demo_enabled=True, tool_wear_alert_kafka_enabled=True,
-                        tool_wear_alert_temi_enabled=False)
+                        tool_wear_alert_temi_enabled=False, measurement_fallback_enabled=False)
     return settings, WearAlerts(settings)
+
+
+def test_eight_balloon_histories_are_distinct_stable_and_green(tmp_path):
+    settings, service = make_service(tmp_path)
+    histories = service.snapshot()["fixedQualityByBalloon"]
+    assert set(histories) == {f"b{i}" for i in range(1, 9)}
+    assert len({tuple(p["quality"] for p in history) for history in histories.values()}) == 8
+    for history in histories.values():
+        assert [point["index"] for point in history] == list(range(1, 11))
+        assert [point["index"] for point in history if point["qcValue"] is not None] == [3, 6, 9]
+        assert all(17.955 < point["quality"] < 18.045 for point in history)
+        assert all(abs(point["quality"] - point["qcValue"]) < 0.0002 for point in history if point["qcValue"] is not None)
+    for index in range(10):
+        values = [history[index]["quality"] for history in histories.values()]
+        assert max(values) - min(values) < 0.003
+    assert WearAlerts(settings).snapshot()["fixedQualityByBalloon"] == histories
 
 
 def test_new_wear_series_defaults_reset_and_tenth_prediction_alarm(tmp_path):
@@ -572,26 +588,26 @@ def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path)
         last_qc = lambda: service.snapshot()["lastQc"]
         assert last_qc() is None
 
-        watch((1, 92, {"956": 9.5}))                       # first batch: only recorded, even if it is 93 later
-        watch((2, 93, {"956": 18.012}), (3, 93, {"956": 18.02}))  # arrival at 93 samples once (first row of the stay)
+        watch((1, 92, {"106": 9.5}))                       # first batch: only recorded, even if it is 93 later
+        watch((2, 93, {"106": 18.012}), (3, 93, {"106": 18.02}))  # arrival at 93 samples once (first row of the stay)
         await asyncio.gather(*service.background)
-        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "956"
+        assert last_qc()["value"] == 18.012 and last_qc()["macro"] == "106"
         assert last_qc()["timestampUtc"] == "2026-11-12T02:31:02.000Z"
         assert service.snapshot()["history"] == []         # no prediction was started
         labels = [e["label"] for e in service.snapshot()["events"]]
         assert labels == ["QC measured"]
 
-        watch((4, 93, {"956": 18.03}))                       # still at 93: no new sample
+        watch((4, 93, {"106": 18.03}))                       # still at 93: no new sample
         assert last_qc()["value"] == 18.012
 
-        for i, macros in enumerate(({}, {"955": 1.0}, {"956": None}, {"956": float("nan")}, None, {"956": "x"})):
+        for i, macros in enumerate(({}, {"955": 1.0}, {"106": None}, {"106": float("nan")}, None, {"106": "x"})):
             watch((10 + 2 * i, 40, {}))
             watch((11 + 2 * i, 93, macros))                # no usable value: last QC stays, a note is logged
             assert last_qc()["value"] == 18.012
         assert [e["label"] for e in service.snapshot()["events"]].count("QC not available") == 6
 
         watch((30, 40, {}))
-        watch((31, 93, {"956": 18}))                       # one measurement per demo; later values do not replace it
+        watch((31, 93, {"106": 18}))                       # one measurement per demo; later values do not replace it
         assert last_qc()["value"] == 18.012
 
         restarted = WearAlerts(service.settings)           # persisted
@@ -615,12 +631,12 @@ def test_demo_measurements_persist_once_and_qc_waits_for_rework_prediction(tmp_p
         service.on_wear("25", 0.09, 0.04, "2026-11-26T01:01:00Z")
         assert service.snapshot()["toolMeasurement"] == measured
         service.arm_second_cutting(another["alertId"])
-        service.record_qc({"timestamp": "2026-11-26T01:02:00Z", "macros": {"956": 18.02}})
+        service.record_qc({"timestamp": "2026-11-26T01:02:00Z", "macros": {"106": 18.02}})
         assert service.snapshot()["lastQc"]["predictionId"] is None
         result = await service.run_prediction(MockPrediction(index=1))
         qc = service.snapshot()["lastQc"]
         assert qc["predictionId"] == result["prediction"]["predictionId"]
-        service.record_qc({"timestamp": "2026-11-26T01:03:00Z", "macros": {"956": 18.03}})
+        service.record_qc({"timestamp": "2026-11-26T01:03:00Z", "macros": {"106": 18.03}})
         assert service.snapshot()["lastQc"] == qc
         restarted = WearAlerts(service.settings)
         assert restarted.snapshot()["lastQc"] == qc
@@ -640,7 +656,7 @@ def test_qc_always_shows_the_real_value_even_outside_tolerance(tmp_path):
         def measure(value):
             service.reset()  # each case is a separate demo, with one quality measurement
             service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)
-            service.on_signals(machine, qc_batch((next(seconds), 93, {"956": value})), state)
+            service.on_signals(machine, qc_batch((next(seconds), 93, {"106": value})), state)
             return service.snapshot()["lastQc"]["value"]
 
         service.on_signals(machine, qc_batch((next(seconds), 40, {})), state)  # first batch
@@ -873,7 +889,7 @@ def test_inspection_result_arrives_with_a_new_wear_value_then_second_run_is_sent
     assert service.on_wear("25", 0.08, 0.03, "2026-11-19T01:00:04+00:00") is True
     result = service.snapshot()["inspection"]
     assert result["status"] == "awaiting_result"  # wear alone must not open the popup
-    assert result["result"] == {
+    assert {key: result["result"][key] for key in ("timestampUtc", "actual", "predicted", "thresholds", "exceeded")} == {
         "timestampUtc": "2026-11-19T01:00:04+00:00", "actual": {"diameter": 0.08, "length": 0.03},
         "predicted": {"diameter": 0.1216, "length": 0.0053}, "thresholds": {"diameter": 0.1, "length": 0.05},
         "exceeded": [],  # back within both thresholds

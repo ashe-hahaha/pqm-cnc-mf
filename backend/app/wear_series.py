@@ -41,3 +41,16 @@ FIXED_QUALITY_SERIES = (18.0120, 18.0100, 17.9980, 17.9930, 17.9920,
                         17.9890, 17.9889, 17.9798, 17.9737, 17.9700)
 FIXED_QUALITY_MEASUREMENTS = {3: 17.9981, 6: 17.9889, 9: 17.9738}
 B9_QUALITY_MEASUREMENTS = {3: 17.9981, 6: 17.9889, 9: 17.9738}
+
+# Stable, slightly different histories for B1–B8; never regenerate randomly on refresh.
+FIXED_QUALITY_BY_BALLOON = {
+    f"b{balloon}": [
+        {"index": index, "quality": value,
+         "qcValue": round(value + (0.0001 if (balloon + index) % 2 else -0.0001), 5)
+         if index in (3, 6, 9) else None}
+        for index, value in enumerate(
+            (round(base + offset + ((balloon + point) % 3 - 1) * 0.0001, 5)
+             for point, base in enumerate(FIXED_QUALITY_SERIES)), 1)
+    ]
+    for balloon, offset in enumerate((-0.0012, -0.0009, -0.0006, -0.0003, 0.0003, 0.0006, 0.0009, 0.0012), 1)
+}

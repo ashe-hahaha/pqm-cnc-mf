@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     tool_wear_demo_enabled: bool = False
     tool_wear_alert_kafka_enabled: bool = False
     tool_wear_alert_kafka_topic: str = "makino_tool_wear_alert"
+    tool_wear_alert_consumer_group: str = ""
+    tool_wear_alert_consume_check_seconds: float = Field(default=10, ge=1)
+    tool_wear_alert_consume_timeout_seconds: float = Field(default=300, ge=1)
+    tool_wear_alert_consume_log_seconds: float = Field(default=30, ge=1)
     tool_wear_alert_temi_enabled: bool = False
     tool_wear_alert_temi_url: str = ""
     tool_wear_alert_temi_token: SecretStr = SecretStr("")
@@ -67,6 +71,9 @@ class Settings(BaseSettings):
     # Simulated prediction time between "Prediction started" and "Prediction completed" (0 = immediately).
     tool_wear_prediction_delay_seconds: float = Field(default=0, ge=0)
     tool_wear_second_run_cutting_delay_seconds: float = Field(default=3, ge=0)
+    measurement_fallback_enabled: bool = True
+    measurement_tool_diameter_max_deviation_mm: float = Field(default=0.01, ge=0, allow_inf_nan=False)
+    measurement_tool_length_max_deviation_mm: float = Field(default=0.001, ge=0, allow_inf_nan=False)
     # Machine CCTV: still pictures from the Hikvision NVR (empty host = disabled).
     cctv_nvr_host: str = ""
     cctv_http_port: int = Field(default=80, ge=1, le=65535)

@@ -46,6 +46,17 @@ export function seriesHistory(
 
 type Spec = Pick<DrawingBalloon, "nominal" | "upperTol" | "lowerTol" | "unit">;
 
+/** Prefer a balloon's own history; drawing imports may have different ids but retain B1–B8 codes. */
+export function fixedQualityHistory(
+  balloon: Pick<DrawingBalloon, "id" | "code">,
+  histories: Record<string, { index: number; quality: number; qcValue?: number | null }[]> | undefined,
+  fallback: QualityHistoryPoint[],
+): QualityHistoryPoint[] {
+  const code = balloon.code.trim().toLowerCase().replace(/^b?0*([1-8])$/, "b$1");
+  const series = histories?.[balloon.id.toLowerCase()] ?? histories?.[code];
+  return series ? seriesHistory(series) : fallback;
+}
+
 /** A flatness-style spec (0 … upper) has no meaningful lower limit. */
 const oneSided = (b: Spec) => b.nominal === 0 && b.lowerTol === 0;
 

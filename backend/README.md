@@ -62,11 +62,17 @@ backend 启动时立即为 `SIGNALS_MACHINE_ID` 建立持续监听，采集最�
 - 每 15 秒无事件时发 SSE heartbeat；上游异常保留上次图表并持续重试。相同数据不重复推送。
 - 同一进程内同一机床共用采集任务。配置机床持续采集，页面关闭、隐藏、刷新均不停止；额外机床按需采集，最后一个订阅断开后取消。demo 使用单 worker；多 worker 不共享采集任务，会重复监听和触发。
 
-### Demo inspection / rework measurements
+### Kafka notification commit tracking
+
+Kafka `inspection` / `second_run` 发布成功后，将 eventId、topic、partition、offset、target group 和原始 5 分钟期限保存到 `kafka_receipts`。在部署的 `backend.env` 设置 `TOOL_WEAR_ALERT_CONSUMER_GROUP` 为 **NUC 消费 notification 的 group.id**（不是 ClientId，也不是本服务接收图片的 group）。默认每 10 秒只读查询一次 committed offset；严格大于该消息 offset 时记录 `Consumer offset committed` 并停止，表示消费进度越过消息，不代表执行成功。等待日志每 30 秒写一次；无 offset/查询失败记录 `Consumer commit check unavailable`，5 分钟未确认则 `Consumption confirmation timed out`。检查永远不重发消息、不 join group、不修改 offset。backend 重启后继续检查 pending 记录，原 deadline 不延长；Reset 清除。group 未配置时记录 `Kafka consumption tracking unavailable`，该条消息不启动检查；填好配置重启后追踪新发布的消息。
+
+可配置：`TOOL_WEAR_ALERT_CONSUME_CHECK_SECONDS=10`、`TOOL_WEAR_ALERT_CONSUME_TIMEOUT_SECONDS=300`、`TOOL_WEAR_ALERT_CONSUME_LOG_SECONDS=30`。Kafka 发布原有失败重试与该检查独立。
 
 Inspection / Rework 待办由 snapshot 的 `tasks` 返回，包含完整弹窗数据，不受 alerts 最近 20 条的显示限制。`POST /api/tool-wear/demo/tasks/{task_id}/defer` 持久化稍后处理状态，不改变 inspection 状态、不发送指令；任务确认后自动从待办移除，superseded/dismissed inspection 不再显示，Reset 清除。顶部铃铛列出所有待办，可重新打开并确认；首次加载只列出历史任务，新任务可自动弹窗。两个 popup 支持标题栏拖动，Later / Esc 都暂缓处理。多客户端通过现有 SSE 更新共享任务状态。
 
-确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["956"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。QC 原值直接保存并显示，不做超限替换。
+### Demo inspection / rework measurements
+
+确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["106"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。QC 原值直接保存并显示，不做超限替换。
 
 B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，22 或 29 任意一个结束并触发一次 prediction（默认 `TOOL_WEAR_NC_TRIGGER_VALUES=22,29`；同一次 run 不重复触发）。首次窗口按顺序恢复 cutting 状态，但不回放历史 prediction。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，由 NC 73–74 触发（已移除 120 秒保底）；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。
 
@@ -228,3 +234,9 @@ Tool wear demo 序列使用 wear_series.py 的十组 diameter/length 值，默�
 Quality 序列集中在 app/wear_series.py：B9 前九组使用 dimension，第十组为 17.89，默认阈值 17.9–18.1；B1–B8 独立十组均正常，FIXED_QUALITY_MEASUREMENTS 配置第 3/6/9 组 measured 值。quality-dimensions-20261126 一次性迁移已有 quality prediction，保留 ID/时间/关联。已移除 QC 修正配置，旧环境变量不再生效；部署后 Reset 清除旧 session 保存的 QC。
 
 Quality 默认公差更新为 18 ± 0.05（17.95–18.05），第十组 17.94。B9_QUALITY_MEASUREMENTS 配置 B9 第 3/6/9 个历史 measured marker（按 prediction 时间和序号关联），真实 QC 仍独立保存并关联 rework prediction。quality-005-markers-20261126 一次性迁移已有 quality_spec 和历史 markers。
+
+B1–B8 使用 FIXED_QUALITY_BY_BALLOON 的八套独立十点历史，基于固定小偏差生成，刷新/重启稳定，3/6/9 各有自己的 measured 值，全部避开 5% warning 区。snapshot 的 fixedQualityByBalloon 按 b1…b8 返回；frontend 优先按 balloon id、其次按 B1…B8 code 选择对应数据，旧 fixedQualitySeries 仅作兼容回退。B9 不受影响。
+
+Measurement demo 保底：NC 93 改读 macro 106。MEASUREMENT_FALLBACK_ENABLED=true 时，tool diameter/length 分别与第九组正常值比较，偏差严格超过 0.01 / 0.001 mm 的轴才使用附近、threshold 内的固定显示值；未超出保持原值。QC 与对应 rework quality prediction 比较，严格超过 0.05 mm 才使用正常参考附近的显示值，单纯超出 tolerance 不触发保底；prediction 未到时先保留原值并标记 validationPending，之后补判断。rawValue/displayValue/fallback 元数据保存在 SQLite；popup/trend/Last QC 使用 displayValue，event log 记录真实值和替换原因。实时 controller readout 不修改。一 demo 一组 tool、一 QC；Reset 清除，刷新/重启不重算。设置及样例见 .env.example 中 MEASUREMENT_*，改为 false 可关闭。
+
+2026-11-27：Quality 保底已移除，macro 106 QC 的 rawValue/value/displayValue 始终一致，不等待 prediction 才显示；prediction 仅用于关联 trend 点。restore-raw-qc-20261127 启动迁移用已存 rawValue 还原旧的修正 QC。Tool wear 原有保底与配置保留，MEASUREMENT_FALLBACK_ENABLED 现在仅作用于 tool wear。

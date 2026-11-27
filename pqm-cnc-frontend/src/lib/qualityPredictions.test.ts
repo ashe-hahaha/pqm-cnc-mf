@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SERIES_SPEC,
   demoBalloonRisk,
+  fixedQualityHistory,
   qualityPredictionFromHistory,
   qualityRisk,
   qualityTrendFromHistory,
@@ -10,6 +11,14 @@ import {
 
 const b1 = { id: "b1", nominal: 0, upperTol: 0.02, lowerTol: 0, unit: "mm" };
 const at = (quality: number, index: number) => ({ quality, index, timestampUtc: "2026-11-11T00:00:00Z" });
+
+it("selects the balloon's own history by id or drawing code without mixing balloon data", () => {
+  const histories = { b1: [{ index: 1, quality: 18.001 }], b2: [{ index: 1, quality: 18.002 }] };
+  const fallback = [at(18, 1)];
+  expect(fixedQualityHistory({ id: "b1", code: "B1" }, histories, fallback)[0].quality).toBe(18.001);
+  expect(fixedQualityHistory({ id: "drawing-uuid", code: "B02" }, histories, fallback)[0].quality).toBe(18.002);
+  expect(fixedQualityHistory({ id: "unknown", code: "B8" }, histories, fallback)).toBe(fallback);
+});
 
 it("colours B9 by demo run phase, keeping red through inspection and the second-run delay", () => {
   expect(demoBalloonRisk()).toBe("not_machined");

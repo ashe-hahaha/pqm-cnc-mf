@@ -59,6 +59,7 @@ import {
   DEFAULT_QUALITY_BALLOON_ID,
   DEFAULT_SERIES_SPEC,
   demoBalloonRisk,
+  fixedQualityHistory,
   qualityPredictionFromHistory,
   qualityRisk,
   qualityTrendFromHistory,
@@ -319,13 +320,14 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
     const toleranced = applyTolerances(withDefaults, backendQualitySpec
       ? { ...tolerances, [qualityId]: backendQualitySpec } : tolerances);
     // B9's demo colour follows the run phase; fixed balloons follow their quality values.
-    const fixedQuality = fixedSeries.findLast((point) => typeof point.quality === "number")?.quality;
     return toleranced.map((b) => {
       if (b.id === qualityId) return { ...b, risk: demoBalloonRisk(cutting) };
+      const fixedQuality = fixedQualityHistory(b, wearDemo?.fixedQualityByBalloon, fixedSeries)
+        .findLast((point) => typeof point.quality === "number")?.quality;
       const value = b.source === "manual" ? fixedQuality : undefined;
       return typeof value === "number" ? { ...b, risk: qualityRisk(value, b) } : b;
     });
-  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, wearDemo?.fixedQualitySpec, cutting, hasFixedSeries, fixedSeries]);
+  }, [data.balloons, tolerances, backendQualitySpec, wearDemo?.qualityBalloonId, wearDemo?.fixedQualitySpec, wearDemo?.fixedQualityByBalloon, cutting, hasFixedSeries, fixedSeries]);
 
   const pageBalloons = useMemo(
     () => allBalloons.filter((b) => (b.page ?? 1) === page),
@@ -360,20 +362,23 @@ export function OpsDashboard({ data: seed }: { data: OpsDashboardSnapshot }) {
   );
   const isQualityBalloon = inspectBalloon != null && inspectBalloon.id === qualityBalloonId;
   const isFixedSeriesBalloon = !isQualityBalloon && hasFixedSeries && inspectBalloon?.source === "manual";
+  const selectedFixedSeries = useMemo(() => inspectBalloon
+    ? fixedQualityHistory(inspectBalloon, wearDemo?.fixedQualityByBalloon, fixedSeries) : fixedSeries,
+    [inspectBalloon, wearDemo?.fixedQualityByBalloon, fixedSeries]);
   const qualityTrend = useMemo(
     () => (inspectBalloon && (isQualityBalloon || isFixedSeriesBalloon)
-      ? qualityTrendFromHistory(isQualityBalloon ? qualityHistory ?? [] : fixedSeries, inspectBalloon,
+      ? qualityTrendFromHistory(isQualityBalloon ? qualityHistory ?? [] : selectedFixedSeries, inspectBalloon,
           isQualityBalloon ? wearDemo?.lastQc : undefined)
       : []),
-    [isQualityBalloon, isFixedSeriesBalloon, inspectBalloon, qualityHistory, fixedSeries, wearDemo?.lastQc],
+    [isQualityBalloon, isFixedSeriesBalloon, inspectBalloon, qualityHistory, selectedFixedSeries, wearDemo?.lastQc],
   );
   const detailPrediction = useMemo(
     () => (isQualityBalloon && inspectBalloon
       ? qualityPredictionFromHistory(qualityHistory ?? [], inspectBalloon, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc)
       : isFixedSeriesBalloon && inspectBalloon
-        ? qualityPredictionFromHistory(fixedSeries, inspectBalloon)
+        ? qualityPredictionFromHistory(selectedFixedSeries, inspectBalloon)
         : inspect?.prediction ?? null),
-    [isQualityBalloon, isFixedSeriesBalloon, inspect, inspectBalloon, qualityHistory, fixedSeries, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc],
+    [isQualityBalloon, isFixedSeriesBalloon, inspect, inspectBalloon, qualityHistory, selectedFixedSeries, wearDemo?.lastQc?.value, wearDemo?.lastQc?.timestampUtc],
   );
   const detailBalloon = useMemo(
     () => (isQualityBalloon && inspectBalloon && detailPrediction

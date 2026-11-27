@@ -17,7 +17,10 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.signals import sse
+from app.kafka_receipts import KafkaReceiptTracker
+from app.measurement_fallback import tool_measurement, quality_measurement
 from app.wear_history import tool_key
+from app.wear_series import FIXED_QUALITY_BY_BALLOON
 from app.wear_series import (B9_QUALITY_MEASUREMENTS, DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
                              TOOL_NO)
 
@@ -31,7 +34,7 @@ EVENTS_KEPT = 1000  # events retained in the database
 NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
 NC_COOLDOWN_S = 10  # minimum time between automatic triggers
 NC_QC_VALUE = "93"  # nc_line value that samples the measured quality (no prediction is started)
-QC_MACRO = "956"  # key of the process row's `macros` object that holds the measured diameter (mm)
+QC_MACRO = "106"  # key of the process row's `macros` object that holds the measured diameter (mm)
 NC_RANGE_LOW, NC_RANGE_HIGH = 73, 74  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
 KAFKA_SCHEMA_VERSION = "1.1.0"
@@ -201,6 +204,15 @@ class WearAlerts:
                         prediction["quality"] = PREDICTION_SERIES[9][2]
                     db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
 
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('restore-raw-qc-20261127')").rowcount:
+                row = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
+                if row:
+                    qc = json.loads(row[0])
+                    qc.update(quality_measurement(qc.get("rawValue", qc["value"])))
+                    db.execute("UPDATE last_qc SET body=? WHERE id=1", (json.dumps(qc),))
+
+        self.kafka_receipts = KafkaReceiptTracker(settings, self.path, self.log_event)
+
     def snapshot(self):
         with closing(sqlite3.connect(self.path)) as db:
             thresholds = db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0]
@@ -224,6 +236,7 @@ class WearAlerts:
                 "fixedQualitySeries": [{"index": i + 1, "quality": q, "qcValue": FIXED_QUALITY_MEASUREMENTS.get(i + 1)}
                                        for i, q in enumerate(FIXED_QUALITY_SERIES)],
                 "fixedQualitySpec": {"nominal": DEFAULT_QUALITY_SPEC[0], "upperTol": DEFAULT_QUALITY_SPEC[1], "lowerTol": DEFAULT_QUALITY_SPEC[2]},
+                "fixedQualityByBalloon": FIXED_QUALITY_BY_BALLOON,
                 "qualityBalloonId": QUALITY_BALLOON_ID, "qualitySpec": json.loads(spec),
                 "lastQc": json.loads(last_qc[0]) if last_qc else None,
                 "toolMeasurement": json.loads(tool_measurement[0]) if tool_measurement else None,
@@ -399,20 +412,29 @@ class WearAlerts:
                     continue  # still the value from before the inspection
                 actual = {"diameter": diameter, "length": length}
                 thresholds = inspection["thresholds"]
+                checked = tool_measurement(actual, thresholds, self.settings)
+                actual = checked["displayValue"]
                 inspection["result"] = {
                     "timestampUtc": stamp, "actual": actual, "predicted": inspection["predicted"],
+                    "rawActual": checked["rawValue"], "measurement": checked,
                     "thresholds": thresholds,
                     "exceeded": [metric for metric in METRICS if actual[metric] > thresholds[metric]],
                 }
                 db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
                 measurement = {"toolNo": inspection["toolNo"], "machineId": inspection["machineId"],
-                               "timestampUtc": stamp, **actual}
+                               "timestampUtc": stamp, **actual, **checked}
                 db.execute("INSERT OR IGNORE INTO demo_tool_measurement VALUES (1, ?)", (json.dumps(measurement),))
                 completed.append(inspection)
         for inspection in completed:
             self.log_event("Inspection result received", inspection["toolNo"], timestamp=inspection["result"]["timestampUtc"],
                            detail=f'Diameter wear {diameter} mm · Tool length wear {length} mm',
                            event_id=f'{inspection["alertId"]}:result')
+            checked = inspection["result"]["measurement"]
+            for key, fallback in checked["fallback"].items():
+                if fallback["applied"]:
+                    self.log_event("Measurement fallback applied", inspection["toolNo"],
+                                   detail=f'{key} · raw={checked["rawValue"][key]} mm · shown={checked["displayValue"][key]} mm · reference={fallback["reference"]} mm · {fallback["reason"]}',
+                                   event_id=f'{inspection["alertId"]}:fallback:{key}')
         return bool(completed)
 
     def kafka_event(self, action, alert_id, machine, tool, now, **extra):
@@ -532,6 +554,7 @@ class WearAlerts:
                   "toolNo": row.get("tool_no"), "macro": QC_MACRO}
             prediction = db.execute("SELECT body FROM predictions WHERE json_extract(body, '$.run')=2 ORDER BY seq DESC LIMIT 1").fetchone()
             qc["predictionId"] = json.loads(prediction[0])["predictionId"] if prediction else None
+            qc.update(quality_measurement(value))
             db.execute("INSERT OR REPLACE INTO last_qc VALUES (1, ?)", (json.dumps(qc),))
         detail = f"Diameter {round(value, 6)} mm · macro {QC_MACRO}"
         logger.info("NC line %s: last QC (macro %s) = %s mm", NC_QC_VALUE, QC_MACRO, value)
@@ -615,7 +638,7 @@ class WearAlerts:
         machine = self.settings.signals_machine_id
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections", "demo_tool_measurement", "deferred_tasks"):
+            for table in ("predictions", "alerts", "outbox", "last_qc", "inspections", "demo_tool_measurement", "deferred_tasks", "kafka_receipts"):
                 db.execute(f"DELETE FROM {table}")
             for i, (diameter, length, quality) in enumerate(PREDICTION_SERIES[:RESET_RECORDS]):
                 stamp = (now - timedelta(minutes=RESET_RECORDS - i)).isoformat()
@@ -655,6 +678,7 @@ class WearAlerts:
                     qc = json.loads(qc_row[0])
                     if not qc.get("predictionId"):
                         qc["predictionId"] = prediction["predictionId"]
+                        qc.update(quality_measurement(qc.get("rawValue", qc["value"])))
                         db.execute("UPDATE last_qc SET body=? WHERE id=1", (json.dumps(qc),))
             thresholds = json.loads(db.execute("SELECT body FROM thresholds WHERE id=1").fetchone()[0])
             # Every metric above its threshold alerts, even if the previous prediction was also above.
@@ -705,6 +729,15 @@ class WearAlerts:
                 )
             self.log_event("Notification sent", event["toolNo"], detail=f"Kafka · {topic} · {action}",
                            event_id=f'{event_key(event)}:kafka')
+            try:
+                self.kafka_receipts.track(event, topic, result.partition, result.offset)
+            except Exception:
+                logger.exception("Kafka publish succeeded but consumption tracking could not be saved eventId=%s", event_key(event))
+                try:
+                    self.log_event("Kafka consumption tracking unavailable", event["toolNo"],
+                                   detail=f"eventId={event_key(event)} · could not save tracking record; publish succeeded")
+                except Exception:
+                    logger.exception("Could not log Kafka tracking failure")
             logger.info("Tool wear notification published to Kafka action=%s alertId=%s eventId=%s topic=%s partition=%s offset=%s",
                         action, event["alertId"], event_key(event), topic, result.partition, result.offset)
         finally:
@@ -816,6 +849,8 @@ class WearAlerts:
                     ",".join(self.destinations) or "none", self.settings.microscope_kafka_bootstrap_servers,
                     self.settings.tool_wear_alert_kafka_topic, bool(self.settings.tool_wear_alert_temi_url))
         self.tasks = [asyncio.create_task(self.deliver(name)) for name in self.destinations]
+        if self.settings.tool_wear_alert_kafka_enabled:
+            self.tasks.append(asyncio.create_task(self.kafka_receipts.run()))
 
     def notify_listeners(self, event="updated", payload=None):
         for listener in self.listeners:
