@@ -52,8 +52,18 @@ describe("quality predictions from backend history", () => {
 
   it("classifies normal, near-limit and out-of-band values", () => {
     expect(qualityRisk(0.008, b1)).toBe("pass");
-    expect(qualityRisk(0.018, b1)).toBe("warning");
+    expect(qualityRisk(0.018, b1)).toBe("pass");
+    expect(qualityRisk(0.0195, b1)).toBe("warning");
     expect(qualityRisk(0.027, b1)).toBe("high_risk");
+  });
+
+  it("keeps all ten fixed quality values green with the 5% warning band", () => {
+    const spec = { unit: "mm", ...DEFAULT_SERIES_SPEC };
+    const values = [18.012, 18.01, 17.998, 17.993, 17.992, 17.989, 17.9889, 17.9798, 17.9737, 17.97];
+    expect(values.map(value => qualityRisk(value, spec))).toEqual(Array(10).fill("pass"));
+    expect(qualityRisk(17.952, spec)).toBe("warning");
+    expect(qualityRisk(18.048, spec)).toBe("warning");
+    expect(qualityRisk(17.94, spec)).toBe("high_risk");
   });
 
   it("uses the latest value for the detail panel, with a negative margin when out of band", () => {

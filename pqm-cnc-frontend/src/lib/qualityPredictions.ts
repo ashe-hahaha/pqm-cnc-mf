@@ -64,12 +64,12 @@ function marginToBand(value: number, b: Spec): number {
   return oneSided(b) ? usl - value : Math.min(usl - value, value - lsl);
 }
 
-/** Outside the band → high risk; inside but within 20% of the band width of a limit → warning. */
+/** Outside the band → high risk; inside but within 5% of the band width of a limit → warning. */
 export function qualityRisk(value: number, b: Spec): BalloonRisk {
   const span = Math.max(b.upperTol + b.lowerTol, 1e-6);
   const margin = marginToBand(value, b);
   if (margin < 0) return "high_risk";
-  return margin < span * 0.2 ? "warning" : "pass";
+  return margin < span * 0.05 ? "warning" : "pass";
 }
 
 /** Prediction history → trend points for the quality balloon (USL/LSL follow the balloon's tolerance). */
