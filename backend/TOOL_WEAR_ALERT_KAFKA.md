@@ -115,7 +115,7 @@ To enable Temi, set `TOOL_WEAR_ALERT_TEMI_ENABLED=true` and supply `TOOL_WEAR_AL
 - 通知过期：待发送的告警通知超过 `TOOL_WEAR_ALERT_EXPIRE_SECONDS`（默认 600 秒，`0` 表示不过期）仍未发出，就直接丢弃，并在 event log 记一条 `Notification expired`（一次清理合并成一条，写明丢弃的数量）。这样 Temi 或 Kafka 停机一段时间后恢复，不会把积压的旧告警一次性补发。失败重试仍是 2、4、8…最多 60 秒的指数退避，过期前一直重试。
 - 预测的模拟耗时（`Prediction started` 到 `Prediction completed` 之间）由 `TOOL_WEAR_PREDICTION_DELAY_SECONDS` 设置，默认 `0`（立即出结果），手动和自动触发共用。
 - 字段名固定为 `nc_line`（`app/wear_alerts.py` 的 `NC_LINE_FIELD`）。
-- **QC 采样（93）**：`nc_line` 变为 `93` 时不启动预测，只读取同一行 `macros["106"]`（实测直径，mm；`macros` 为字符串宏号 → 浮点数的对象，没有时是 `{}`），保存为 B9 的 Last QC（常量 `NC_QC_VALUE` / `QC_MACRO`）。值缺失或不是有限数字时 Last QC 保持不变，并在 event log 记一条 `QC not available`。值写入 `wear-alerts.sqlite3` 的 `last_qc` 表，重启后保留，Reset demo 会清除；通过 `GET /api/tool-wear/demo` 的 `lastQc` 字段返回，前端显示在 Selected Balloon Detail 的 Last QC（仅 B9）。QC 始终显示 macro 106 的真实值，不做保底修正；MEASUREMENT_FALLBACK_ENABLED 仅作用于 tool wear。
+- **QC 采样（93）**：`nc_line` 变为 `93` 时不启动预测，只读取同一行 `macros["106"]`（实测直径，mm；`macros` 为字符串宏号 → 浮点数的对象，没有时是 `{}`），保存为 B9 的 Last QC（常量 `NC_QC_VALUES` / `QC_MACRO`）。值缺失或不是有限数字时 Last QC 保持不变，并在 event log 记一条 `QC not available`。值写入 `wear-alerts.sqlite3` 的 `last_qc` 表，重启后保留，Reset demo 会清除；通过 `GET /api/tool-wear/demo` 的 `lastQc` 字段返回，前端显示在 Selected Balloon Detail 的 Last QC（仅 B9）。QC 与 tool wear measurement 均显示真实值，不做保底修正。
 - 页面刚打开后的第一批数据只记录当前值，不触发；自动触发之间至少间隔 10 秒（触发值和区间触发共用同一个冷却）；预测进行中不重复触发，被冷却挡掉的触发直接丢弃、不补发。
 - 只按 `timestamp` 比上次更新的行判断，重叠窗口和数据库停写时重复返回的旧行不会重复触发。
 - 实时质量气球（B9，见 `wear_series.py`）的公差保存在后端 `wear-alerts.sqlite3` 的 `quality_spec` 表（默认 18 / +0.1 / -0.1），手动和自动触发都用它判断 quality 告警。

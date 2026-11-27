@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from app.config import Settings
 from app.signals import sse
 from app.kafka_receipts import KafkaReceiptTracker
-from app.measurement_fallback import tool_measurement, quality_measurement
+from app.measurements import tool_measurement, quality_measurement
 from app.wear_history import tool_key
 from app.wear_series import FIXED_QUALITY_BY_BALLOON
 from app.wear_series import (B9_QUALITY_MEASUREMENTS, DEFAULT_QUALITY_SPEC, DEFAULT_WEAR_THRESHOLDS, HISTORICAL_WEAR_MEASUREMENTS, FIXED_QUALITY_SERIES, FIXED_QUALITY_MEASUREMENTS, PREDICTION_SERIES, QUALITY_BALLOON_CODE, QUALITY_BALLOON_ID,
@@ -33,7 +33,7 @@ EVENTS_RETURNED = 100  # events included in the snapshot
 EVENTS_KEPT = 1000  # events retained in the database
 NC_LINE_FIELD = "nc_line"  # controller process-row field watched for the auto trigger
 NC_COOLDOWN_S = 10  # minimum time between automatic triggers
-NC_QC_VALUE = "93"  # nc_line value that samples the measured quality (no prediction is started)
+NC_QC_VALUES = frozenset(("91", "92", "93"))  # QC sampling lines; no prediction is started
 QC_MACRO = "106"  # key of the process row's `macros` object that holds the measured diameter (mm)
 NC_RANGE_LOW, NC_RANGE_HIGH = 73, 74  # first entry into this range (inclusive) also triggers
 FAILURE_EVENT_INTERVAL_S = 30  # at most one "Notification failed" event per alert and destination in this time
@@ -204,12 +204,36 @@ class WearAlerts:
                         prediction["quality"] = PREDICTION_SERIES[9][2]
                     db.execute("UPDATE predictions SET body=? WHERE seq=?", (json.dumps(prediction), seq))
 
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('quality-004-20261127')").rowcount:
+                db.execute("UPDATE quality_spec SET body=? WHERE id=1", (default.model_dump_json(),))
+
             if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('restore-raw-qc-20261127')").rowcount:
                 row = db.execute("SELECT body FROM last_qc WHERE id=1").fetchone()
                 if row:
                     qc = json.loads(row[0])
                     qc.update(quality_measurement(qc.get("rawValue", qc["value"])))
                     db.execute("UPDATE last_qc SET body=? WHERE id=1", (json.dumps(qc),))
+
+            if db.execute("INSERT OR IGNORE INTO settings_migrations VALUES ('restore-raw-tool-20261127')").rowcount:
+                row = db.execute("SELECT body FROM demo_tool_measurement WHERE id=1").fetchone()
+                if row:
+                    measurement = json.loads(row[0])
+                    raw = measurement.get("rawValue")
+                    if isinstance(raw, dict):
+                        measurement.update(**raw, **tool_measurement(raw))
+                        measurement.pop("fallback", None)
+                        db.execute("UPDATE demo_tool_measurement SET body=? WHERE id=1", (json.dumps(measurement),))
+                for seq, body in db.execute("SELECT seq, body FROM inspections").fetchall():
+                    inspection = json.loads(body)
+                    result = inspection.get("result")
+                    if not result:
+                        continue
+                    raw = result.get("rawActual") or result.get("measurement", {}).get("rawValue")
+                    if not isinstance(raw, dict):
+                        continue
+                    result.update(actual={**result["actual"], **raw}, rawActual=raw, measurement=tool_measurement(raw))
+                    result["exceeded"] = [key for key in METRICS if result["actual"][key] > result["thresholds"][key]]
+                    db.execute("UPDATE inspections SET body=? WHERE seq=?", (json.dumps(inspection), seq))
 
         self.kafka_receipts = KafkaReceiptTracker(settings, self.path, self.log_event)
 
@@ -348,7 +372,7 @@ class WearAlerts:
         first = "last_timestamp" not in state
         changed = False
         fires = []
-        qc_row = None
+        qc_rows = []
         wear_rows = []
         for row in rows:
             if not first and row["timestamp"] <= state["last_timestamp"]:
@@ -358,8 +382,8 @@ class WearAlerts:
             kind = None if first else nc_trigger_kind(state["value"], current, triggers)
             if kind:
                 fires.append((state["value"], current, kind))
-            if not first and current == NC_QC_VALUE and state["value"] != current:
-                qc_row = row  # the line just reached the QC step (one sample per arrival)
+            if not first and current in NC_QC_VALUES:
+                qc_rows.append(row)  # allow a later row in the range to supply the first valid macro
             if current != state.get("value"):
                 changed = True
             state["value"] = current
@@ -372,7 +396,9 @@ class WearAlerts:
         if state.get("value") != self.nc["value"]:
             self.nc["value"] = state.get("value")
             changed = True
-        if qc_row is not None:
+        if qc_rows:
+            # Do not let a later line overwrite an earlier valid measurement in the same batch.
+            qc_row = next((row for row in qc_rows if qc_from_row(row) is not None), qc_rows[0])
             self.record_qc(qc_row)
         result_ready = False
         for tool, diameter, length, stamp in wear_rows:  # the feed's initial batch only records baseline values
@@ -412,8 +438,7 @@ class WearAlerts:
                     continue  # still the value from before the inspection
                 actual = {"diameter": diameter, "length": length}
                 thresholds = inspection["thresholds"]
-                checked = tool_measurement(actual, thresholds, self.settings)
-                actual = checked["displayValue"]
+                checked = tool_measurement(actual)
                 inspection["result"] = {
                     "timestampUtc": stamp, "actual": actual, "predicted": inspection["predicted"],
                     "rawActual": checked["rawValue"], "measurement": checked,
@@ -429,12 +454,6 @@ class WearAlerts:
             self.log_event("Inspection result received", inspection["toolNo"], timestamp=inspection["result"]["timestampUtc"],
                            detail=f'Diameter wear {diameter} mm · Tool length wear {length} mm',
                            event_id=f'{inspection["alertId"]}:result')
-            checked = inspection["result"]["measurement"]
-            for key, fallback in checked["fallback"].items():
-                if fallback["applied"]:
-                    self.log_event("Measurement fallback applied", inspection["toolNo"],
-                                   detail=f'{key} · raw={checked["rawValue"][key]} mm · shown={checked["displayValue"][key]} mm · reference={fallback["reference"]} mm · {fallback["reason"]}',
-                                   event_id=f'{inspection["alertId"]}:fallback:{key}')
         return bool(completed)
 
     def kafka_event(self, action, alert_id, machine, tool, now, **extra):
@@ -538,13 +557,13 @@ class WearAlerts:
             return self.get_inspection(db, alert_id)
 
     def record_qc(self, row):
-        """NC line reached NC_QC_VALUE: keep the measured diameter (macro QC_MACRO) as the quality balloon's last QC."""
+        """A new row in NC 91–93: retain this demo's first valid macro measurement."""
         if not self.settings.tool_wear_demo_enabled:
             return
         value = qc_from_row(row)
         if value is None:
-            logger.info("NC line %s: no valid macro %s value, last QC unchanged", NC_QC_VALUE, QC_MACRO)
-            self.log_event("QC not available", TOOL_NO, detail=f"NC line {NC_QC_VALUE} · macro {QC_MACRO} missing or invalid")
+            logger.info("NC line %s: no valid macro %s value, last QC unchanged", row.get(NC_LINE_FIELD), QC_MACRO)
+            self.log_event("QC not available", TOOL_NO, detail=f"NC line {row.get(NC_LINE_FIELD)} · macro {QC_MACRO} missing or invalid")
             return
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -557,7 +576,7 @@ class WearAlerts:
             qc.update(quality_measurement(value))
             db.execute("INSERT OR REPLACE INTO last_qc VALUES (1, ?)", (json.dumps(qc),))
         detail = f"Diameter {round(value, 6)} mm · macro {QC_MACRO}"
-        logger.info("NC line %s: last QC (macro %s) = %s mm", NC_QC_VALUE, QC_MACRO, value)
+        logger.info("NC line %s: last QC (macro %s) = %s mm", row.get(NC_LINE_FIELD), QC_MACRO, value)
         self.log_event("QC measured", TOOL_NO, detail=detail)
         self.notify_listeners()
 

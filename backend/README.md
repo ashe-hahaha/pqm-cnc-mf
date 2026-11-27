@@ -72,7 +72,7 @@ Inspection / Rework 待办由 snapshot 的 `tasks` 返回，包含完整弹窗�
 
 ### Demo inspection / rework measurements
 
-确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 93 从 `macros["106"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。QC 原值直接保存并显示，不做超限替换。
+确认 laser inspection 成功后页面切到 Tool Wear；收到 inspection result 时，将首次 actual diameter/length 存入 `demo_tool_measurement`，两个 Tool Wear prediction 图显示该组 measured markers。确认 Rework 后切回 Product Quality（API/Kafka action 仍为 `second_run`）。NC line 91–93 从 `macros["106"]` 读取首次有效 QC，保存到 `last_qc`，并关联 rework prediction 的 `predictionId`，在 B9 quality trend 显示一个 measured point；若 QC 先到，等 rework prediction 生成后补关联。每次 Reset 到下次 Reset 只保存这一组 tool measurement 和一个 QC，不被后续上报覆盖，刷新/重启保留，Reset 清除。QC 原值直接保存并显示，不做超限替换。
 
 B9 的 demo cutting 状态通过 `GET /api/tool-wear/demo` 的 `cutting` 返回，并由现有 events 通知刷新：first run 读到 NC 1–10 任意值开始，22 或 29 任意一个结束并触发一次 prediction（默认 `TOOL_WEAR_NC_TRIGGER_VALUES=22,29`；同一次 run 不重复触发）。首次窗口按顺序恢复 cutting 状态，但不回放历史 prediction。确认 second run 后延迟 `TOOL_WEAR_SECOND_RUN_CUTTING_DELAY_SECONDS`（默认 3 秒）开始，之后启动的 prediction 完成时结束，由 NC 73–74 触发（已移除 120 秒保底）；若 prediction 先完成则取消延迟。重复确认不会重新计时，Reset demo 清除状态。状态保存在 backend 内存，页面刷新不重置；服务重启则重置。该状态仅为视觉提示，不代表实际切削检测。
 
@@ -237,6 +237,12 @@ Quality 默认公差更新为 18 ± 0.05（17.95–18.05），第十组 17.94。
 
 B1–B8 使用 FIXED_QUALITY_BY_BALLOON 的八套独立十点历史，基于固定小偏差生成，刷新/重启稳定，3/6/9 各有自己的 measured 值，全部避开 5% warning 区。snapshot 的 fixedQualityByBalloon 按 b1…b8 返回；frontend 优先按 balloon id、其次按 B1…B8 code 选择对应数据，旧 fixedQualitySeries 仅作兼容回退。B9 不受影响。
 
-Measurement demo 保底：NC 93 改读 macro 106。MEASUREMENT_FALLBACK_ENABLED=true 时，tool diameter/length 分别与第九组正常值比较，偏差严格超过 0.01 / 0.001 mm 的轴才使用附近、threshold 内的固定显示值；未超出保持原值。QC 与对应 rework quality prediction 比较，严格超过 0.05 mm 才使用正常参考附近的显示值，单纯超出 tolerance 不触发保底；prediction 未到时先保留原值并标记 validationPending，之后补判断。rawValue/displayValue/fallback 元数据保存在 SQLite；popup/trend/Last QC 使用 displayValue，event log 记录真实值和替换原因。实时 controller readout 不修改。一 demo 一组 tool、一 QC；Reset 清除，刷新/重启不重算。设置及样例见 .env.example 中 MEASUREMENT_*，改为 false 可关闭。
+Measurement demo 保底：NC 91–93 改读 macro 106。MEASUREMENT_FALLBACK_ENABLED=true 时，tool diameter/length 分别与第九组正常值比较，偏差严格超过 0.01 / 0.001 mm 的轴才使用附近、threshold 内的固定显示值；未超出保持原值。QC 与对应 rework quality prediction 比较，严格超过 0.05 mm 才使用正常参考附近的显示值，单纯超出 tolerance 不触发保底；prediction 未到时先保留原值并标记 validationPending，之后补判断。rawValue/displayValue/fallback 元数据保存在 SQLite；popup/trend/Last QC 使用 displayValue，event log 记录真实值和替换原因。实时 controller readout 不修改。一 demo 一组 tool、一 QC；Reset 清除，刷新/重启不重算。设置及样例见 .env.example 中 MEASUREMENT_*，改为 false 可关闭。
 
 2026-11-27：Quality 保底已移除，macro 106 QC 的 rawValue/value/displayValue 始终一致，不等待 prediction 才显示；prediction 仅用于关联 trend 点。restore-raw-qc-20261127 启动迁移用已存 rawValue 还原旧的修正 QC。Tool wear 原有保底与配置保留，MEASUREMENT_FALLBACK_ENABLED 现在仅作用于 tool wear。
+
+2026-11-27：Tool Wear measurement 保底亦已移除，app/measurements.py 只保留真实值的序列化。popup 的 actual、trend 的 inspection marker、Quality Last QC 均直接使用原始读数；不再读取 MEASUREMENT_* 修正配置、不再生成替代值。restore-raw-tool-20261127 一次性恢复 SQLite 中有 rawValue/rawActual 的 tool marker 与 inspection result，保留时间和流程状态。历史 prediction、3/6/9 mock measured markers、阈值和报警规则保持不变；每 demo 一组 inspection measurement 与一个 QC 的限制保留。
+
+Quality 默认公差改为 18 ± 0.04（17.96–18.04），quality-004-20261127 一次性更新已保存 quality_spec。B1–B8 的 prediction 与历史 measured 均处于 5% warning 区之外（绿色范围 17.964–18.036）；B9 第十组 17.94 仍低于 LSL。
+
+QC 现在接受 NC 91、92、93 任意值；服务首次窗口仍仅建立基线，之后按新行时间顺序选择范围内第一个有效 macro 106。同一批次 91 缺失、92 有效、93 也有效时取 92 的值；已记录后不覆盖。相同行号的后续新 timestamp 也可重试缺失的宏。范围外不触发，仍一 demo 一 QC，Reset 清除。

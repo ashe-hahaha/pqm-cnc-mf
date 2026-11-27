@@ -1,7 +1,7 @@
 import asyncio
 
 from app.config import Settings
-from app.measurement_fallback import quality_measurement, tool_measurement
+from app.measurements import quality_measurement, tool_measurement
 from app.wear_alerts import MockPrediction, WearAlerts
 import json
 import sqlite3
@@ -12,20 +12,11 @@ def settings(tmp_path, **kwargs):
     return Settings(_env_file=None, microscope_image_dir=str(tmp_path), tool_wear_demo_enabled=True, **kwargs)
 
 
-def test_tool_boundaries_and_independent_axis_fallback(tmp_path):
-    config = settings(tmp_path)
-    limits = {"diameter": 0.121, "length": 0.005}
-    boundary = {"diameter": 0.131, "length": 0.006}
-    checked = tool_measurement(boundary, limits, config)
-    assert checked["displayValue"] == boundary  # strict >, no float rounding false-positive at the boundary
-    raw = {"diameter": 0.132, "length": 0.0049}
-    checked = tool_measurement(raw, limits, config)
-    assert checked["rawValue"] == raw
-    assert checked["displayValue"] == {"diameter": 0.1207, "length": 0.0049}
-    assert checked["fallback"]["diameter"]["applied"] and not checked["fallback"]["length"]["applied"]
-    assert tool_measurement(raw, limits, config) == checked
-    config.measurement_fallback_enabled = False
-    assert tool_measurement(raw, limits, config)["displayValue"] == raw
+def test_tool_always_displays_real_measurement_without_clipping_or_substitution():
+    for raw in ({"diameter": 0.131, "length": 0.006}, {"diameter": 1, "length": -0.1},
+                {"diameter": 0, "length": 0}, {"diameter": 0.12, "length": 0.005}):
+        checked = tool_measurement(raw)
+        assert checked["rawValue"] == checked["displayValue"] == raw
 
 
 def test_quality_always_uses_real_measurement_without_fallback():
@@ -45,11 +36,11 @@ def test_tool_inspection_popup_and_trend_share_persisted_display_value(tmp_path)
     snapshot = service.snapshot()
     result, marker = snapshot["inspection"]["result"], snapshot["toolMeasurement"]
     assert result["rawActual"] == marker["rawValue"] == {"diameter": 1, "length": 0.005}
-    assert result["actual"] == marker["displayValue"] == {"diameter": 0.1207, "length": 0.005}
+    assert result["actual"] == marker["displayValue"] == {"diameter": 1, "length": 0.005}
     assert marker["diameter"] == result["actual"]["diameter"]
     assert not service.on_wear("25", 0.119, 0.004, "2026-11-27T01:00:01Z")
     assert WearAlerts(config).snapshot()["toolMeasurement"] == marker
-    assert any(e["label"] == "Measurement fallback applied" and "raw=1.0" in e["detail"] for e in snapshot["events"])
+    assert not any(e["label"] == "Measurement fallback applied" for e in snapshot["events"])
     service.reset()
     assert service.snapshot()["toolMeasurement"] is None
 
@@ -82,7 +73,7 @@ def test_qc_macro_106_before_prediction_resolves_once_and_preserves_raw(tmp_path
     asyncio.run(run())
 
 
-def test_qc_after_prediction_and_disabled_fallback(tmp_path):
+def test_qc_after_prediction_keeps_real_value(tmp_path):
     service = WearAlerts(settings(tmp_path))
     service.cutting = {"run": 2, "status": "cutting", "alertId": "a"}
     prediction = service.record(MockPrediction(index=1))["prediction"]
@@ -91,19 +82,19 @@ def test_qc_after_prediction_and_disabled_fallback(tmp_path):
     assert qc["predictionId"] == prediction["predictionId"] and qc["rawValue"] == 17
     assert qc["value"] == 17 and not qc["validationPending"]
     service.reset()
-    service.settings.measurement_fallback_enabled = False
     service.record_qc({"timestamp": "2026-11-27T01:00:01Z", "macros": {"106": 17}})
     qc = service.snapshot()["lastQc"]
     assert qc["value"] == 17 and not qc["fallbackApplied"]
 
 
-def test_existing_corrected_qc_restores_raw_on_startup_without_changing_tool_measurement(tmp_path):
+def test_existing_corrected_qc_and_tool_restore_raw_on_startup(tmp_path):
     config = settings(tmp_path)
     service = WearAlerts(config)
     service.record_qc({"timestamp": "2026-11-27T01:00:00Z", "macros": {"106": 19.12345}})
     qc = service.snapshot()["lastQc"]
     with closing(sqlite3.connect(service.path)) as db, db:
         db.execute("DELETE FROM settings_migrations WHERE name='restore-raw-qc-20261127'")
+        db.execute("DELETE FROM settings_migrations WHERE name='restore-raw-tool-20261127'")
         old = {**qc, "value": 18.011, "displayValue": 18.011, "fallbackApplied": True}
         db.execute("UPDATE last_qc SET body=?", (json.dumps(old),))
         tool = {"diameter": 0.1207, "rawValue": {"diameter": 1}}
@@ -111,4 +102,27 @@ def test_existing_corrected_qc_restores_raw_on_startup_without_changing_tool_mea
     restored = WearAlerts(config).snapshot()
     assert restored["lastQc"]["value"] == restored["lastQc"]["displayValue"] == 19.12345
     assert not restored["lastQc"]["fallbackApplied"]
-    assert restored["toolMeasurement"] == tool
+    assert restored["toolMeasurement"]["diameter"] == 1
+    assert restored["toolMeasurement"]["displayValue"] == {"diameter": 1}
+
+
+def test_existing_inspection_popup_restores_original_values_and_preserves_stage(tmp_path):
+    config = settings(tmp_path)
+    service = WearAlerts(config)
+    alert = service.record(MockPrediction(index=10))["alert"]
+    service.start_inspection(alert["alertId"])
+    service.on_wear("25", 1, 0.01, "2026-11-27T01:00:00Z")
+    snapshot = service.snapshot()
+    with closing(sqlite3.connect(service.path)) as db, db:
+        db.execute("DELETE FROM settings_migrations WHERE name='restore-raw-tool-20261127'")
+        inspection = snapshot["inspection"]
+        inspection["result"]["actual"] = {"diameter": 0.1207, "length": 0.0049}
+        inspection["result"]["measurement"] = {"rawValue": {"diameter": 1, "length": 0.01},
+                                                  "displayValue": inspection["result"]["actual"], "fallback": {"applied": True}}
+        inspection["result"]["exceeded"] = []
+        db.execute("UPDATE inspections SET body=?", (json.dumps(inspection),))
+    restored = WearAlerts(config).snapshot()["inspection"]
+    assert restored["status"] == "awaiting_result"  # image-driven popup timing is untouched
+    assert restored["result"]["actual"] == {"diameter": 1, "length": 0.01}
+    assert restored["result"]["measurement"]["displayValue"] == restored["result"]["actual"]
+    assert restored["result"]["exceeded"] == ["diameter", "length"]

@@ -10,8 +10,8 @@ when it is available; the UI reads the list from the snapshot.
 TOOL_NO = "25"
 QUALITY_BALLOON_ID = "b9"  # the one balloon whose quality prediction is live (changes on every trigger)
 QUALITY_BALLOON_CODE = QUALITY_BALLOON_ID.upper()  # shown in events and notifications
-# (nominal, +upper, -lower) every balloon starts with (the UI uses the same default for the fixed ones): 18 ± 0.05 mm, i.e. 17.95 … 18.05 (editable in the UI, then stored by the backend)
-DEFAULT_QUALITY_SPEC = (18.0, 0.05, 0.05)
+# (nominal, +upper, -lower) every balloon starts with (the UI uses the same default for the fixed ones): 18 ± 0.04 mm, i.e. 17.96 … 18.04 (editable in the UI, then stored by the backend)
+DEFAULT_QUALITY_SPEC = (18.0, 0.04, 0.04)
 
 # (diameter wear mm, tool length wear mm, quality value mm: 18 + the earlier flatness values)
 PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
@@ -25,7 +25,7 @@ PREDICTION_SERIES: tuple[tuple[float, float, float], ...] = (
     (0.1202, 0.0047, 17.9889),
     (0.1208, 0.0049, 17.9798),
     (0.1210, 0.0050, 17.9737),
-    # 10: wear exceeds its upper limits; quality falls below LSL 17.95.
+    # 10: wear exceeds its upper limits; quality falls below LSL 17.96.
     (0.1216, 0.0053, 17.9400),
 )
 

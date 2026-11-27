@@ -40,7 +40,7 @@ describe("quality predictions from backend history", () => {
     const trend = qualityTrendFromHistory(history, { unit: "mm", ...DEFAULT_SERIES_SPEC }, { value: 17.98765, predictionId: "rework" });
     expect(trend.filter(p => p.qcValue !== null).map(p => p.index)).toEqual([3, 6, 9, 1]);
     expect(trend.at(-1)?.qcValue).toBe(17.98765);
-    expect(trend.every(p => p.lsl === 17.95 && p.usl === 18.05)).toBe(true);
+    expect(trend.every(p => p.lsl === 17.96 && p.usl === 18.04)).toBe(true);
   });
   it("attaches one QC marker by prediction id even when sequence indexes repeat", () => {
     const history = [{ ...at(18.01, 1), predictionId: "old" }, { ...at(18.02, 1), predictionId: "rework" }];
@@ -70,8 +70,8 @@ describe("quality predictions from backend history", () => {
     const spec = { unit: "mm", ...DEFAULT_SERIES_SPEC };
     const values = [18.012, 18.01, 17.998, 17.993, 17.992, 17.989, 17.9889, 17.9798, 17.9737, 17.97];
     expect(values.map(value => qualityRisk(value, spec))).toEqual(Array(10).fill("pass"));
-    expect(qualityRisk(17.952, spec)).toBe("warning");
-    expect(qualityRisk(18.048, spec)).toBe("warning");
+    expect(qualityRisk(17.962, spec)).toBe("warning");
+    expect(qualityRisk(18.038, spec)).toBe("warning");
     expect(qualityRisk(17.94, spec)).toBe("high_risk");
   });
 
@@ -124,7 +124,7 @@ describe("seriesHistory (fixed record of the balloons that are not live)", () =>
     const history = seriesHistory([{ index: 9, quality: 18.0088 }, { index: 10, quality: 18.15 }]);
     const balloon = { id: "b3", unit: "mm", ...DEFAULT_SERIES_SPEC };
     const trend = qualityTrendFromHistory(history, balloon);
-    expect(trend.map((p) => [p.usl, p.lsl])).toEqual([[18.05, 17.95], [18.05, 17.95]]);
+    expect(trend.map((p) => [p.usl, p.lsl])).toEqual([[18.04, 17.96], [18.04, 17.96]]);
     expect(qualityTrendFromHistory(history, { ...balloon, upperTol: 0.2 })[1].usl).toBe(18.2);
   });
 });

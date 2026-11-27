@@ -18,7 +18,7 @@ from app.wear_series import PREDICTION_SERIES
 def make_service(tmp_path):
     settings = Settings(_env_file=None, microscope_image_dir=str(tmp_path),
                         tool_wear_demo_enabled=True, tool_wear_alert_kafka_enabled=True,
-                        tool_wear_alert_temi_enabled=False, measurement_fallback_enabled=False)
+                        tool_wear_alert_temi_enabled=False)
     return settings, WearAlerts(settings)
 
 
@@ -30,12 +30,24 @@ def test_eight_balloon_histories_are_distinct_stable_and_green(tmp_path):
     for history in histories.values():
         assert [point["index"] for point in history] == list(range(1, 11))
         assert [point["index"] for point in history if point["qcValue"] is not None] == [3, 6, 9]
-        assert all(17.955 < point["quality"] < 18.045 for point in history)
+        assert all(17.964 < point["quality"] < 18.036 for point in history)
         assert all(abs(point["quality"] - point["qcValue"]) < 0.0002 for point in history if point["qcValue"] is not None)
+        assert all(17.964 < point["qcValue"] < 18.036 for point in history if point["qcValue"] is not None)
     for index in range(10):
         values = [history[index]["quality"] for history in histories.values()]
         assert max(values) - min(values) < 0.003
     assert WearAlerts(settings).snapshot()["fixedQualityByBalloon"] == histories
+
+
+def test_quality_004_migration_updates_saved_spec_once(tmp_path):
+    settings, service = make_service(tmp_path)
+    service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.05, lowerTol=0.05))
+    with closing(sqlite3.connect(service.path)) as db, db:
+        db.execute("DELETE FROM settings_migrations WHERE name='quality-004-20261127'")
+    restarted = WearAlerts(settings)
+    assert restarted.snapshot()["qualitySpec"] == {"nominal": 18, "upperTol": 0.04, "lowerTol": 0.04}
+    restarted.set_quality_spec(QualitySpec(nominal=18, upperTol=0.03, lowerTol=0.03))
+    assert WearAlerts(settings).snapshot()["qualitySpec"]["upperTol"] == 0.03
 
 
 def test_new_wear_series_defaults_reset_and_tenth_prediction_alarm(tmp_path):
@@ -65,9 +77,9 @@ def test_quality_dimension_series_and_one_time_migration(tmp_path):
     assert [point["quality"] for point in service.snapshot()["series"]] == expected
     assert all(service.record(MockPrediction(index=index))["qualityAlert"] is None for index in range(1, 10))
     result = service.record(MockPrediction(index=10))
-    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.95
+    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.96
     fixed = service.snapshot()["fixedQualitySeries"]
-    assert len(fixed) == 10 and all(17.95 <= point["quality"] <= 18.05 for point in fixed)
+    assert len(fixed) == 10 and all(17.96 <= point["quality"] <= 18.04 for point in fixed)
     assert [point["index"] for point in fixed if point["qcValue"] is not None] == [3, 6, 9]
     assert all(abs(point["qcValue"] - point["quality"]) < 0.001 for point in fixed if point["qcValue"] is not None)
     stamp, prediction_id = result["prediction"]["timestampUtc"], result["prediction"]["predictionId"]
@@ -83,11 +95,11 @@ def test_b9_historical_qc_markers_and_new_tolerance_migration(tmp_path):
     settings, service = make_service(tmp_path)
     service.reset()
     snapshot = service.snapshot()
-    assert snapshot["qualitySpec"] == {"nominal": 18, "upperTol": 0.05, "lowerTol": 0.05}
+    assert snapshot["qualitySpec"] == {"nominal": 18, "upperTol": 0.04, "lowerTol": 0.04}
     assert [point["index"] for point in snapshot["history"] if point["qcValue"] is not None] == [3, 6, 9]
     result = service.record(MockPrediction())
     assert result["prediction"]["quality"] == 17.94
-    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.95
+    assert result["qualityAlert"]["side"] == "lower" and result["qualityAlert"]["limit"] == 17.96
     with closing(sqlite3.connect(service.path)) as db, db:
         db.execute("DELETE FROM settings_migrations WHERE name='quality-005-markers-20261126'")
         db.execute("UPDATE quality_spec SET body=?", (json.dumps({"nominal": 18, "upperTol": 0.1, "lowerTol": 0.1}),))
@@ -297,7 +309,7 @@ def test_finished_balloon_quality_history_is_all_within_default_tolerance(tmp_pa
     snapshot = service.snapshot()
     fixed = snapshot["fixedQualitySeries"]
     assert [point["index"] for point in fixed] == list(range(1, 11))
-    assert all(17.95 <= point["quality"] <= 18.05 for point in fixed)
+    assert all(17.96 <= point["quality"] <= 18.04 for point in fixed)
     assert fixed[-1]["quality"] == 17.97
     assert [p["index"] for p in fixed if p["qcValue"] is not None] == [3, 6, 9]
     assert snapshot["series"][-1]["quality"] == 17.94
@@ -423,11 +435,11 @@ def test_prediction_events_are_sent_in_order_and_persisted(tmp_path):
 
 def test_quality_alert_follows_the_stored_tolerance(tmp_path):
     settings, service = make_service(tmp_path)
-    assert service.snapshot()["qualitySpec"] == {"nominal": 18, "upperTol": 0.05, "lowerTol": 0.05}
+    assert service.snapshot()["qualitySpec"] == {"nominal": 18, "upperTol": 0.04, "lowerTol": 0.04}
     # Default spec 18 ± 0.1 mm: #9 (18.0088) is fine, #10 (18.15) is above USL 18.1.
     assert service.record(MockPrediction(index=9))["qualityAlert"] is None
     alert = service.record(MockPrediction(index=10))["qualityAlert"]
-    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "lower", 17.94, 17.95)
+    assert (alert["kind"], alert["balloonId"], alert["side"], alert["value"], alert["limit"]) == ("quality", "b9", "lower", 17.94, 17.96)
 
     # A wider tolerance makes the same value acceptable again.
     service.set_quality_spec(QualitySpec(nominal=18, upperTol=0.1, lowerTol=0.2))
@@ -577,6 +589,31 @@ def qc_batch(*rows):
     """rows: (second, nc_line, macros) -> a process batch whose rows carry a `macros` map."""
     return {"process": [{"timestamp": f"2026-11-12T02:31:{second:02d}.000Z", "nc_line": line, "macros": macros}
                         for second, line, macros in rows]}
+
+
+@pytest.mark.parametrize("line", [91, 92, 93])
+def test_qc_samples_first_valid_value_on_any_line_91_to_93(tmp_path, line):
+    _, service = make_service(tmp_path)
+    machine, state = service.settings.signals_machine_id, {}
+    service.on_signals(machine, qc_batch((1, 90, {"106": 19})), state)
+    service.on_signals(machine, qc_batch((2, 90, {"106": 19}), (3, 94, {"106": 19})), state)
+    assert service.snapshot()["lastQc"] is None
+    service.on_signals(machine, qc_batch((4, line, {})), state)
+    assert service.snapshot()["lastQc"] is None
+    service.on_signals(machine, qc_batch((5, line, {"106": 17.9876}), (6, line, {"106": 18.02})), state)
+    qc = service.snapshot()["lastQc"]
+    assert qc["value"] == 17.9876 and qc["timestampUtc"].endswith("05.000Z")
+    assert service.snapshot()["prediction"] is None
+
+
+def test_qc_range_batch_keeps_earliest_valid_value_and_skips_missing_macro(tmp_path):
+    _, service = make_service(tmp_path)
+    machine, state = service.settings.signals_machine_id, {}
+    service.on_signals(machine, qc_batch((1, 90, {})), state)
+    service.on_signals(machine, qc_batch((2, 91, {}), (3, 92, {"106": 17.98}), (4, 93, {"106": 18.01})), state)
+    assert service.snapshot()["lastQc"]["value"] == 17.98
+    service.on_signals(machine, qc_batch((5, 91, {"106": 18.02})), state)
+    assert service.snapshot()["lastQc"]["value"] == 17.98
 
 
 def test_nc_line_93_samples_the_measured_diameter_without_a_prediction(tmp_path):
